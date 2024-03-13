@@ -9,14 +9,16 @@
 /* Prend en argument une string correspondant à une commande ou à une pipeline et renvoie une structure
 Command associée, avec dans ses champs les structures Command associées à son input et aux substitutions
 qu'elle utilise. */
-Command* getCommand(char* input) {
-    Command* pipeline[MAX_LENGTH_PIPELINE]; // Tableau pour stocker temporairement les commandes de la pipeline.
+Command* getCommand(char* command_line, bool* background) {
+    Command* pipeline[MAX_LENGTH_PIPELINE]; // Tableau servant à stocker temporairement les commandes de la pipeline.
     unsigned index = 0;
-    char* firstCommand = first_command(input);
+    *background = parse_ampersand(command_line);
+    char* firstCommand = first_command(command_line);
     bool error = false;
     do { // Pour chaque commande de la pipeline.
         // Création et initialisation de la structure Command.
-        pipeline[index] = create_command();
+        pipeline[index] = malloc(sizeof(Command));
+        memset(0, pipeline[index], sizeof(pipeline[index]));
         // Remplissage du champ strComm de la structure commande.
         pipeline[index] -> strComm = malloc(MAX_NB_ARGS * 10);
         strcpy(pipeline[index] -> strComm, firstCommand);
@@ -25,7 +27,7 @@ Command* getCommand(char* input) {
         if (parse_command(pipeline[index]) == -1 || parse_redirections(pipeline[index]) == -1) error = true;
         // Préparation prochaine itération.
         index++;
-        firstCommand = first_command(input);
+        firstCommand = first_command(command_line);
         if (firstCommand == NULL) break;
         if (is_only_spaces(firstCommand)) {
             error = true;
@@ -45,23 +47,34 @@ Command* getCommand(char* input) {
     return pipeline[index-1];
 }
 
+/* Retourne 1 ou 0 suivant si la ligne de commande passée en argument se termine par un symbole '&'
+ou pas. Le cas échéant, le symbole est enlevé de la string. */
+int parse_ampersand(char* command_line) {
+    for (unsigned i = strlen(command_line)-1; i >= 0; --i) {
+        if (command_line[i] == '&') {
+            command_line[i] = '\0';
+            return 1;
+        } else if (command_line[i] == ' ') return 0;
+    }
+}
+
 /* Alloue l'espace mémoire nécéssaire pour une structure commande, l'initialise avec des valeurs par
 défaut, et renvoie un pointeur vers lui. */
-Command* create_command() {
-    Command* command = malloc(sizeof(Command));
-    command -> strComm = NULL;
-    command -> argsComm = NULL;
-    command -> nbArgs = 0;
-    command -> in_sub = NULL;
-    command -> in_redir = NULL;
-    command -> out_redir = NULL;
-    command -> err_redir = NULL;
-    command -> substitutions = NULL;
-    command -> nbSubstitutions = 0;
-    command -> input = NULL;
-    command -> background = false;
-    return command;
-}
+// Command* create_command() {
+//     Command* command = malloc(sizeof(Command));
+//     command -> strComm = NULL;
+//     command -> argsComm = NULL;
+//     command -> nbArgs = 0;
+//     command -> in_sub = NULL;
+//     command -> in_redir = NULL;
+//     command -> out_redir = NULL;
+//     command -> err_redir = NULL;
+//     command -> substitutions = NULL;
+//     command -> nbSubstitutions = 0;
+//     command -> input = NULL;
+//     command -> background = false;
+//     return command;
+// }
 
 // Renvoie la première commande de la ligne de commande (éventuellement une pipeline) passée en argument.
 char* first_command(char* input) {
@@ -87,8 +100,8 @@ char* first_command(char* input) {
         len_command = len_input - strlen(first_bar_adress);
         strncpy(strComm, input, len_command); // copie de la première commande dans strComm. 
         strComm[len_command] = '\0';
-        memmove(input, input+len_command+1,strlen(first_bar_adress)); // troncage de l'input
-        // au niveau de la fin de la première commande.
+        memmove(input, input+len_command+1,strlen(first_bar_adress)); /* troncage de l'input
+        au niveau de la fin de la première commande. */
     } else {
       strcpy(strComm, input);
       memset(input,0,len_input);
@@ -165,8 +178,8 @@ int parse_command(Command* command) {
     // Libération buffers.
     free(cpy);
     free(inside_parentheses);
-    // On crée des commandes à partir des substitutions récupérées. On le fait maintenant, à la fin de la
-    // fonction, et pas lorsque la string de commande est découpée, pour ne pas interrompre strtok.
+    /* On crée des commandes à partir des substitutions récupérées. On le fait maintenant, à la fin de la
+    fonction, et pas lorsque la string de commande est découpée, pour ne pas interrompre strtok. */
     if (command -> nbSubstitutions > 0) {
         // Initialisation tableau substitutions.
         command -> substitutions = malloc(MAX_NB_SUBSTITUTIONS * sizeof(Command));
@@ -198,19 +211,19 @@ int parse_redirections(Command* command) {
     unsigned args_removed = 0;
     for (unsigned i = 0; i < command -> nbArgs; ++i) {
         if (command -> argsComm[i] == NULL) break;
-        if (!strcmp(command -> argsComm[i], "&")) {
-            if (i != command -> nbArgs - args_removed - 1) { // Si '&' n'est pas le dernier mot de la commande.
-                fprintf(stderr,"Command %s: misplaced '&' symbol.\n", command -> argsComm[0]);
-                returnValue = -1;
-                break;
-            } else {
-                command -> background = true;
-                free(command -> argsComm[i]);
-                command -> argsComm[i] = NULL;
-                args_removed++;
-                break;
-            }
-        }
+        // if (!strcmp(command -> argsComm[i], "&")) {
+        //     if (i != command -> nbArgs - args_removed - 1) { // Si '&' n'est pas le dernier mot de la commande.
+        //         fprintf(stderr,"Command %s: misplaced '&' symbol.\n", command -> argsComm[0]);
+        //         returnValue = -1;
+        //         break;
+        //     } else {
+        //         command -> background = true;
+        //         free(command -> argsComm[i]);
+        //         command -> argsComm[i] = NULL;
+        //         args_removed++;
+        //         break;
+        //     }
+        // }
         int redirection_value = is_redirection_symbol(command -> argsComm[i]);
         if (redirection_value) {
             if (command -> argsComm[i+1] == NULL || is_redirection_symbol(command -> argsComm[i+1])) {
@@ -293,8 +306,6 @@ void print_command(Command* command) {
         printf("%s,", command -> argsComm[i]);
     }
     printf("%s\n",command -> argsComm[command -> nbArgs-1]);
-    // Affichage du fait que la commande doit être exécutée en arrière-plan ou non.
-    printf("Background: %s\n", command -> background ? "yes" : "no");
     // Affichage entrée, sortie et sortie erreur standard de la commande.
     if (command -> in_redir != NULL) printf("Input: %s %s\n", command -> in_redir[0], command -> in_redir[1]);
     if (command -> out_redir != NULL) printf("Output: %s %s\n", command -> out_redir[0], command -> out_redir[1]);

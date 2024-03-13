@@ -13,7 +13,8 @@ int fg(int job_num);
 // Fonctions auxiliaires
 int main(int argc, char** argv);
 void main_loop();
-void execute_command(Command* command, int pipe_out[2]);
+int launch_job_execution(char* command_line);
+int execute_command(Command* command, int pipe_out[2]);
 int apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]);
 int callRightCommand(Command* command);
 bool correct_nbArgs(char**, unsigned, unsigned);

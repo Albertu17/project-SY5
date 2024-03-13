@@ -17,12 +17,13 @@ struct Command {
     struct Command** substitutions; // Les éventuelles substitutions (sans compter celle au fichier d'entrée).
     unsigned nbSubstitutions; // Le nombre de substitutions qu'utilise la commande (sans compter celle au fichier d'entrée).
     struct Command* input; // La commande précédente (dans le contexte d'une pipeline).
-    bool background; // booléen indiquant si la commande doit être lancée en arrière-plan ou non.
+    // bool background; // booléen indiquant si la commande doit être lancée en arrière-plan ou non.
 };
 typedef struct Command Command;
 
 // Fonctions
-Command* getCommand(char* input);
+Command* getCommand(char* command_line, bool* background);
+int parse_ampersand(char* command_line);
 Command* create_command();
 char* first_command(char* input);
 int parse_command(Command* command);

@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
 
     main_loop(); // récupère et traite les commandes entrées.
 
-    // Libération des buffers.
+    // Libération des variables globales.
     free(previous_folder);
     free(current_folder);
     for (int i = 0; i < nbJobs; i++){
@@ -50,7 +50,7 @@ int main(int argc, char** argv) {
         free(l_jobs[i].ground);
     }
     for (int i = 0; i < nbJobs; i++) {
-        kill(l_jobs[i].pid,SIGKILL);
+        kill(l_jobs[i].pid,SIGKILL); // À MODIFIER: arrêter les job via leur pgid
     }
     free(l_jobs);
     return lastReturn;
@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
 
 void main_loop() {
     // Initialisation buffers.
-    char* strInput = (char*) NULL; /* Stocke la ligne de commande entrée par l'utilisateur (allocation
+    char* command_line = (char*) NULL; /* Stocke la ligne de commande entrée par l'utilisateur (allocation
     espace mémoire faite par readline). */
     // Paramétrage readline.
     rl_outstream = stderr;
@@ -66,34 +66,93 @@ void main_loop() {
     // Boucle de récupération et de traitement des commandes.
     while (running) {
         // Libération de la mémoire allouée par readline.
-        free(strInput);
+        free(command_line);
         // On vérifie l'état des éventuels processus créés précedemment.
-        check_sons_state();
+        // check_sons_state();
         // Récupération de la commande entrée et affichage du prompt.
         char* tmp = getPrompt();
-        strInput = readline(tmp);
+        command_line = readline(tmp);
         free(tmp);
         // Tests commande non vide.
-        if (strInput == NULL) {
+        if (command_line == NULL) {
             exit(lastReturn);
-        }
-        else if (is_only_spaces(strInput)) {
-            continue;
-        }
+        } else if (is_only_spaces(command_line)) continue;
         // Traitement de la ligne de commande entrée.
         else {
-            add_history(strInput); // Ajoute la ligne de commande entrée à l'historique.
-            Command* command = getCommand(strInput);
-            if (command != NULL) execute_command(command, NULL);
+            add_history(command_line); // Ajoute la ligne de commande entrée à l'historique.
+            lastReturn = launch_job_execution(command_line);
         }
     }
     // Libération de la mémoire allouée par readline.
-    free(strInput);
+    free(command_line);
+}
+
+// Supervise le traitement d'un job.
+int launch_job_execution(char* command_line) {
+    // Appel à la création de la structure commande associée à la ligne de commande.
+    char* command_line_cpy = malloc(sizeof(command_line));
+    strcpy(command_line_cpy, command_line);
+    bool* job_background = malloc(sizeof(bool));
+    *job_background = 0;
+    Command* command = getCommand(command_line, job_background);
+    free(command_line_cpy);
+
+    if (*job_background == 1) {
+        if (nbJobs == 40) {
+            fprintf(stderr,"Too many jobs running simultaneously\n");
+            return 1;
+        }
+        char * ground = malloc(sizeof(char)*11);
+        strcpy(ground,"Background");
+        create_job(command_name,"Running",pid,ground);
+        print_job(l_jobs[nbJobs-1]);
+    }
+
+    int tmp = execute_command(command, NULL);
+        // À la fin de la pipeline.
+    if (pipe_out == NULL && !command -> background) {//si il y a des jobs qui tournent alors on ne veut pas attendre les fils
+        //waitForAllSons();
+        while(wait(NULL) > 0); // On attend la fin de tous les processus fils.
+        lastReturn = tmp; // On met à jour lastReturn.
+    }
+
+            if (pipe_out == NULL) { // Si on est arrivé à la fin de la pipeline.
+            int status;
+            if (!command -> background) {
+                waitpid(pid,&status,0); /* On attend la fin du dernier fils et on récupère sa valeur de retour.
+                On attend la fin du reste des fils lors du retour à execute_command(), après avoir retiré
+                le dernier lecteur. */
+            }
+            else {
+                pid_t state = waitpid(pid,&status,WNOHANG);
+                if (nbJobs == 40) {
+                    fprintf(stderr,"Too many jobs running simultaneously\n");
+                    return 1;
+                }
+                else if (state != 0) {
+                    if (WIFEXITED(status)) {//si le fils s'est terminé normalement c'est qu'en parametre il y avait une fonction instantané
+                        fprintf(stderr,"[%d] %d\n",nbJobs,pid);
+                    }
+                    return 1;
+                }
+                else {
+                    char * ground = malloc(sizeof(char)*11);
+                    strcpy(ground,"Background");
+                    create_job(command_name,"Running",pid,ground);
+                    print_job(l_jobs[nbJobs-1]);
+                    return 0;
+                }
+            }
+            return WEXITSTATUS(status);//return the exit value of the son
+        } else return 0; // Valeur de retour au milieu d'une pipeline: ne sera pas mise dans lastReturn.
+
+
+    free(job_background);
 }
 
 /* Lance l'exécution de toutes les commandes situées à l'intérieur de la structure Command passée en
 argument, gère le stockage de leur sortie, puis lance l'exécution de l'agument command. */
-void execute_command(Command* command, int pipe_out[2]) {
+int execute_command(Command* command, int pipe_out[2]) {
     int* pipe_in = NULL;
     // Stockage de l'input sur un tube.
     if (command -> input != NULL) {
@@ -125,12 +184,6 @@ void execute_command(Command* command, int pipe_out[2]) {
     }
 
     int tmp = apply_redirections(command, pipe_in, pipe_out);
-    // À la fin de la pipeline.
-    if (pipe_out == NULL && !command -> background) {//si il y a des jobs qui tournent alors on ne veut pas attendre les fils
-        //waitForAllSons();
-        while(wait(NULL) > 0); // On attend la fin de tous les processus fils.
-        lastReturn = tmp; // On met à jour lastReturn.
-    }
 
     // Libération de la mémoire allouée pour le tube stockant l'entrée.
     if (pipe_in != NULL) free(pipe_in);
@@ -142,6 +195,8 @@ void execute_command(Command* command, int pipe_out[2]) {
     }
     // Libération de la mémoire allouée pour la commande.
     free_command(command);
+    
+    return tmp;
 }
 
 int apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
@@ -223,6 +278,40 @@ int apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
     if (fd_err != -1) dup2(cpy_stderr, 2);
 
     return tmp;
+}
+
+
+/*
+This function returns the error of execvp and is exuting the command "command_name" with the arguments "arguments".
+*/
+int external_command(Command* command, int pipe_out[2]) {
+    pid_t pid = fork();
+
+    if (pid == 0) { // processus enfant
+        pthread_sigmask(SIG_UNBLOCK,&sa.sa_mask,NULL); // On retire le masquage des signaux.
+        int tmp = 0;
+        if (nbJobs < 40) {
+            if (pipe_out != NULL) { // Redirection de la sortie de la commande exécutée si c'est attendu.
+                close(pipe_out[0]);
+                int fd_out = pipe_out[1];
+                dup2(fd_out, 1);
+                close(fd_out);
+            }
+            // On exécute aussi ici les commandes internes qui affichent quelque chose.
+            if (!strcmp(command -> argsComm[0], "pwd") || !strcmp(command -> argsComm[0], "?")
+                || !strcmp(command -> argsComm[0], "kill") || !strcmp(command -> argsComm[0], "jobs")
+                || !strcmp(command -> argsComm[0], "bg") || !strcmp(command -> argsComm[0], "fg")) {
+                tmp = callRightCommand(command);
+            } else {
+                tmp = execvp(command -> argsComm[0], command -> argsComm);
+                fprintf(stderr,"%s\n", strerror(errno)); // Ne s'exécute qu'en cas d'erreur dans l'exécution de execvp.
+            }
+        }
+        exit(tmp);
+    }
+    else { // processus parent
+        return pid;
+    }
 }
 
 /* Prend en argument une structure Command correspondant à une commande interne, vérifie que le
@@ -346,75 +435,6 @@ bool correct_nbArgs(char** argsComm, unsigned min_nbArgs, unsigned max_nbArgs) {
         correct_nb = false;
     }
     return correct_nb;
-}
-
-/*
-This function returns the error of execvp and is exuting the command "command_name" with the arguments "arguments".
-*/
-int external_command(Command* command, int pipe_out[2]) {
-    pid_t pid = fork();
-
-    if (pid == 0) { // processus enfant
-        pthread_sigmask(SIG_UNBLOCK,&sa.sa_mask,NULL); // On retire le masquage des signaux.
-        int tmp = 0;
-        if (nbJobs < 40) {
-            if (pipe_out != NULL) { // Redirection de la sortie de la commande exécutée si c'est attendu.
-                close(pipe_out[0]);
-                int fd_out = pipe_out[1];
-                dup2(fd_out, 1);
-                close(fd_out);
-            }
-            // On exécute aussi ici les commandes internes qui affichent quelque chose.
-            if (!strcmp(command -> argsComm[0], "pwd") || !strcmp(command -> argsComm[0], "?")
-                || !strcmp(command -> argsComm[0], "kill") || !strcmp(command -> argsComm[0], "jobs")
-                || !strcmp(command -> argsComm[0], "bg") || !strcmp(command -> argsComm[0], "fg")) {
-                tmp = callRightCommand(command);
-            } else {
-                tmp = execvp(command -> argsComm[0], command -> argsComm);
-                fprintf(stderr,"%s\n", strerror(errno)); // Ne s'exécute qu'en cas d'erreur dans l'exécution de execvp.
-            }
-        }
-        exit(tmp);
-    }
-    else { // processus parent
-        if (pipe_out == NULL) { // Si on est arrivé à la fin de la pipeline.
-            int status;
-            if (!command -> background) {
-                waitpid(pid,&status,0); // On attend la fin du dernier fils et on récupère sa valeur de retour.
-                // On attend la fin du reste des fils lors du retour à apply_redirections(), après avoir retiré le dernier lecteur.
-            }
-            else {
-                int status;
-                pid_t state = waitpid(pid,&status,WNOHANG);
-                if (nbJobs == 40) {
-                    fprintf(stderr,"Too much jobs running simultaneously\n");
-                    return 1;
-                }
-                else if (state != 0) {
-                    if (WIFEXITED(status)) {//si le fils s'est terminé normalement c'est qu'en parametre il y avait une fonction instantané
-                        fprintf(stderr,"[%d] %d\n",nbJobs,pid);
-                    }
-                    return 1;
-                }
-                else {
-                    int sizeWhitoutAnd = strlen(command->strComm)-1;
-                    while(*(command->strComm+sizeWhitoutAnd) != '&') {//on enleve le & a la fin
-                        sizeWhitoutAnd--;
-                    }
-                    char* command_name = malloc(sizeof(char)*sizeWhitoutAnd);
-                    char * ground = malloc(sizeof(char)*11);
-                    strcpy(ground,"Background");
-                    strncpy(command_name,command->strComm,sizeWhitoutAnd-1);
-                    command_name[sizeWhitoutAnd-1] = '\0';
-
-                    create_job(command_name,"Running",pid,ground);
-                    print_job(l_jobs[nbJobs-1]);
-                    return 0;
-                }
-            }
-            return WEXITSTATUS(status);//return the exit value of the son
-        } else return 0; // Valeur de retour au milieu d'une pipeline: ne sera pas mise dans lastReturn.
-    }
 }
 
 char* pwd() {
