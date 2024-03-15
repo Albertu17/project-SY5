@@ -9,16 +9,15 @@
 /* Prend en argument une string correspondant à une commande ou à une pipeline et renvoie une structure
 Command associée, avec dans ses champs les structures Command associées à son input et aux substitutions
 qu'elle utilise. */
-Command* getCommand(char* command_line, bool* background) {
+Command* getCommand(char* command_line) {
     Command* pipeline[MAX_LENGTH_PIPELINE]; // Tableau servant à stocker temporairement les commandes de la pipeline.
     unsigned index = 0;
-    *background = parse_ampersand(command_line);
     char* firstCommand = first_command(command_line);
     bool error = false;
     do { // Pour chaque commande de la pipeline.
         // Création et initialisation de la structure Command.
         pipeline[index] = malloc(sizeof(Command));
-        memset(0, pipeline[index], sizeof(pipeline[index]));
+        memset(pipeline[index], 0, sizeof(*pipeline[index]));
         // Remplissage du champ strComm de la structure commande.
         pipeline[index] -> strComm = malloc(MAX_NB_ARGS * 10);
         strcpy(pipeline[index] -> strComm, firstCommand);
@@ -50,12 +49,15 @@ Command* getCommand(char* command_line, bool* background) {
 /* Retourne 1 ou 0 suivant si la ligne de commande passée en argument se termine par un symbole '&'
 ou pas. Le cas échéant, le symbole est enlevé de la string. */
 int parse_ampersand(char* command_line) {
+    bool found = 0;
     for (unsigned i = strlen(command_line)-1; i >= 0; --i) {
         if (command_line[i] == '&') {
             command_line[i] = '\0';
-            return 1;
-        } else if (command_line[i] == ' ') return 0;
+            found = true;
+            break;
+        } else if (command_line[i] != ' ') break;
     }
+    return found;
 }
 
 /* Alloue l'espace mémoire nécéssaire pour une structure commande, l'initialise avec des valeurs par
@@ -211,19 +213,12 @@ int parse_redirections(Command* command) {
     unsigned args_removed = 0;
     for (unsigned i = 0; i < command -> nbArgs; ++i) {
         if (command -> argsComm[i] == NULL) break;
-        // if (!strcmp(command -> argsComm[i], "&")) {
-        //     if (i != command -> nbArgs - args_removed - 1) { // Si '&' n'est pas le dernier mot de la commande.
-        //         fprintf(stderr,"Command %s: misplaced '&' symbol.\n", command -> argsComm[0]);
-        //         returnValue = -1;
-        //         break;
-        //     } else {
-        //         command -> background = true;
-        //         free(command -> argsComm[i]);
-        //         command -> argsComm[i] = NULL;
-        //         args_removed++;
-        //         break;
-        //     }
-        // }
+        if (!strcmp(command -> argsComm[i], "&")) { /* '&' ne peut être qu'à la fin de la ligne de commande.
+            et si c'est le cas, il a retiré plus tôt dans le parsing. */
+            fprintf(stderr,"Command %s: misplaced '&' symbol.\n", command -> argsComm[0]);
+            returnValue = -1;
+            break;
+        }
         int redirection_value = is_redirection_symbol(command -> argsComm[i]);
         if (redirection_value) {
             if (command -> argsComm[i+1] == NULL || is_redirection_symbol(command -> argsComm[i+1])) {

@@ -13,12 +13,13 @@ int fg(int job_num);
 // Fonctions auxiliaires
 int main(int argc, char** argv);
 void main_loop();
-int launch_job_execution(char* command_line);
+void launch_job_execution(char* command_line);
 int execute_command(Command* command, int pipe_out[2]);
-int apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]);
+int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]);
+void restore_standard_streams(int standard_streams_copy[3]);
 int callRightCommand(Command* command);
 bool correct_nbArgs(char**, unsigned, unsigned);
-char* getPrompt();
+char* getPrompt(char* prompt_buf);
 
 // Variables globales
 bool running;

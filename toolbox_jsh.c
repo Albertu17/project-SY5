@@ -10,7 +10,7 @@
 // Vérifie que le pointeur passé en argument est différent de NULL.
 void checkAlloc(void* ptr) {
     if (ptr == NULL) {
-        fprintf(stderr,"ERROR IN MALLOC : NOT ENOUGH SPACE !");
+        fprintf(stderr,"Allocation error : not enough space\n");
         exit(-1);
     }
 }

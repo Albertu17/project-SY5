@@ -22,7 +22,7 @@ struct Command {
 typedef struct Command Command;
 
 // Fonctions
-Command* getCommand(char* command_line, bool* background);
+Command* getCommand(char* command_line);
 int parse_ampersand(char* command_line);
 Command* create_command();
 char* first_command(char* input);

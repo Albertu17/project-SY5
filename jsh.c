@@ -21,7 +21,6 @@
 #define BLEU "\033[01;34m"
 
 int main(int argc, char** argv) {
-
     // Mise en place d'un masque.
     sigemptyset(&sa.sa_mask);
     sigaddset(&sa.sa_mask,SIGINT);
@@ -34,120 +33,89 @@ int main(int argc, char** argv) {
     // Initialisation variables globales.
     previous_folder = pwd();
     current_folder = pwd();
-    running = 1;
-    lastReturn = 0;
+    l_jobs = malloc(sizeof(Job)*32); // réalloué si nécessaire.
     nbJobs = 0;
-    l_jobs = malloc(sizeof(Job)*40); //maximum de 40 jobs simultanément.
+    lastReturn = 0;
+    running = 1;
 
     main_loop(); // récupère et traite les commandes entrées.
 
     // Libération des variables globales.
     free(previous_folder);
     free(current_folder);
-    for (int i = 0; i < nbJobs; i++){
-        free(l_jobs[i].command_name);
-        free(l_jobs[i].state);
-        free(l_jobs[i].ground);
-    }
-    for (int i = 0; i < nbJobs; i++) {
-        kill(l_jobs[i].pid,SIGKILL); // À MODIFIER: arrêter les job via leur pgid
-    }
     free(l_jobs);
     return lastReturn;
 }
 
 void main_loop() {
     // Initialisation buffers.
-    char* command_line = (char*) NULL; /* Stocke la ligne de commande entrée par l'utilisateur (allocation
-    espace mémoire faite par readline). */
+    char* command_line = (char*) NULL; /* Stocke la ligne de commande entrée par l'utilisateur (allocation espace mémoire faite par readline). */
+    char* prompt_buf = malloc(sizeof(char) * 50); // Stocke le prompt à afficher à chaque tout de boucle.
     // Paramétrage readline.
     rl_outstream = stderr;
     using_history();
     // Boucle de récupération et de traitement des commandes.
     while (running) {
-        // Libération de la mémoire allouée par readline.
-        free(command_line);
         // On vérifie l'état des éventuels processus créés précedemment.
         // check_sons_state();
         // Récupération de la commande entrée et affichage du prompt.
-        char* tmp = getPrompt();
-        command_line = readline(tmp);
-        free(tmp);
-        // Tests commande non vide.
-        if (command_line == NULL) {
-            exit(lastReturn);
-        } else if (is_only_spaces(command_line)) continue;
+        command_line = readline(getPrompt(prompt_buf));
         // Traitement de la ligne de commande entrée.
-        else {
+        if (command_line != NULL && !is_only_spaces(command_line)) { // Tests commande non vide.
             add_history(command_line); // Ajoute la ligne de commande entrée à l'historique.
-            lastReturn = launch_job_execution(command_line);
+            launch_job_execution(command_line);
         }
+        // Libération de la mémoire allouée par readline.
+        free(command_line);
     }
-    // Libération de la mémoire allouée par readline.
-    free(command_line);
+    // Terminaison des jobs et libération espace mémoire.
+    free(prompt_buf);
+    for (unsigned i = 0; i < nbJobs; ++i){
+        // kill(l_jobs[i].pgid,SIGKILL); // À MODIFIER: arrêter les job via leur pgid
+        free(l_jobs + i);
+    }
 }
 
 // Supervise le traitement d'un job.
-int launch_job_execution(char* command_line) {
+void launch_job_execution(char* command_line) {
     // Appel à la création de la structure commande associée à la ligne de commande.
     char* command_line_cpy = malloc(sizeof(command_line));
     strcpy(command_line_cpy, command_line);
-    bool* job_background = malloc(sizeof(bool));
-    *job_background = 0;
-    Command* command = getCommand(command_line, job_background);
-    free(command_line_cpy);
-
-    if (*job_background == 1) {
-        if (nbJobs == 40) {
-            fprintf(stderr,"Too many jobs running simultaneously\n");
-            return 1;
+    bool job_background = parse_ampersand(command_line);
+    Command* command = getCommand(command_line);
+    // Création de la nouvelle structure Job.
+    if (nbJobs == 40) {
+        l_jobs = (Job*) realloc(l_jobs, sizeof(l_jobs)+sizeof(Job));
+        checkAlloc(l_jobs);
+    }
+    l_jobs[nbJobs] = create_job(command_line_cpy, nbJobs, job_background);
+    // Appel à l'exécution de la commande associée au job.
+    int execute_ret = execute_command(command, NULL);
+    switch (execute_ret) {
+        case 0: // La dernière commande du pipeline à exécuter était cd ou exit.
+        case 1: // Une erreur est survenue lors du processus d'exécution du pipeline.
+            lastReturn = execute_ret;
+            break;
+        default: { // L'exécution s'est passée correctement, et le pid du dernier fils a été renvoyé.
+            int status = 0;
+            if (job_background) waitpid(execute_ret,&status,WNOHANG);
+            else waitpid(execute_ret,&status,0);
+            lastReturn = status; // (WIFEXITED(status) ?
+            break;
+            // if (WIFEXITED(status)) {//si le fils s'est terminé normalement c'est qu'en parametre il y avait une fonction instantané
+            //     fprintf(stderr,"[%d] %d\n",nbJobs,pid);
+            //     returnValue = 1; // ?
+            // }
         }
-        char * ground = malloc(sizeof(char)*11);
-        strcpy(ground,"Background");
-        create_job(command_name,"Running",pid,ground);
-        print_job(l_jobs[nbJobs-1]);
     }
-
-    int tmp = execute_command(command, NULL);
-        // À la fin de la pipeline.
-    if (pipe_out == NULL && !command -> background) {//si il y a des jobs qui tournent alors on ne veut pas attendre les fils
-        //waitForAllSons();
-        while(wait(NULL) > 0); // On attend la fin de tous les processus fils.
-        lastReturn = tmp; // On met à jour lastReturn.
+    if (job_background) {
+        print_job(l_jobs[nbJobs]);
+        nbJobs++; // Seul un job en background fait augmenter le compte de jobs en cours.
     }
-
-            if (pipe_out == NULL) { // Si on est arrivé à la fin de la pipeline.
-            int status;
-            if (!command -> background) {
-                waitpid(pid,&status,0); /* On attend la fin du dernier fils et on récupère sa valeur de retour.
-                On attend la fin du reste des fils lors du retour à execute_command(), après avoir retiré
-                le dernier lecteur. */
-            }
-            else {
-                pid_t state = waitpid(pid,&status,WNOHANG);
-                if (nbJobs == 40) {
-                    fprintf(stderr,"Too many jobs running simultaneously\n");
-                    return 1;
-                }
-                else if (state != 0) {
-                    if (WIFEXITED(status)) {//si le fils s'est terminé normalement c'est qu'en parametre il y avait une fonction instantané
-                        fprintf(stderr,"[%d] %d\n",nbJobs,pid);
-                    }
-                    return 1;
-                }
-                else {
-                    char * ground = malloc(sizeof(char)*11);
-                    strcpy(ground,"Background");
-                    create_job(command_name,"Running",pid,ground);
-                    print_job(l_jobs[nbJobs-1]);
-                    return 0;
-                }
-            }
-            return WEXITSTATUS(status);//return the exit value of the son
-        } else return 0; // Valeur de retour au milieu d'une pipeline: ne sera pas mise dans lastReturn.
-
-
-    free(job_background);
+    else {
+        while(waitpid(-(l_jobs[nbJobs-1].pgid), NULL, 0) > 0); // On attend la fin de tous les processus créés pour le job.
+        removeJob(l_jobs, nbJobs, nbJobs-1);
+    }
 }
 
 /* Lance l'exécution de toutes les commandes situées à l'intérieur de la structure Command passée en
@@ -156,11 +124,11 @@ int execute_command(Command* command, int pipe_out[2]) {
     int* pipe_in = NULL;
     // Stockage de l'input sur un tube.
     if (command -> input != NULL) {
-        pipe_in = malloc(8); // 8 octets nécessaires pour stocker 2 int.
+        pipe_in = malloc(2*sizeof(int));
         pipe(pipe_in);
         execute_command(command -> input, pipe_in);
     } else if (command -> in_sub != NULL) { // Si l'entrée est la sortie d'une substitution.
-        pipe_in = malloc(8);
+        pipe_in = malloc(2*sizeof(int));
         pipe(pipe_in);
         execute_command(command -> in_sub, pipe_in);
     }
@@ -171,7 +139,7 @@ int execute_command(Command* command, int pipe_out[2]) {
         // Pour toutes les éventuelles substitutions que la commande utilise.
         for (int i = 0; i < command -> nbArgs; ++i) {
             if (!strcmp(command -> argsComm[i], "fifo")) {
-                int* pfd = malloc(8);
+                int* pfd = malloc(2*sizeof(int));
                 tubes[cpt] = pfd;
                 pipe(pfd);
                 // Stockage sur le tube.
@@ -182,9 +150,46 @@ int execute_command(Command* command, int pipe_out[2]) {
             }
         }
     }
-
-    int tmp = apply_redirections(command, pipe_in, pipe_out);
-
+    // Appel à l'exécution de la commande.
+    int returnValue = 0;
+    int* standard_streams_copy = apply_redirections(command, pipe_in, pipe_out);
+    if (standard_streams_copy == NULL) { // Les redirections ont échoué.
+        returnValue = 1;
+    } else {
+        if (!strcmp(command -> argsComm[0],"cd") || !strcmp(command -> argsComm[0],"exit")) {
+            returnValue = callRightCommand(command); // cd et exit doivent être exécutées sur le processus jsh.
+        } else {
+            pid_t pid = fork();
+            if (pid == 0) { // processus enfant
+                pthread_sigmask(SIG_UNBLOCK,&sa.sa_mask,NULL); // Levée du masquage des signaux.
+                int tmp = 0;
+                if (pipe_out != NULL) { // Redirection de la sortie de la commande exécutée si c'est attendu.
+                    close(pipe_out[0]);
+                    int fd_out = pipe_out[1];
+                    dup2(fd_out, 1);
+                    close(fd_out);
+                }
+                // On exécute aussi ici les commandes internes autres que cd et exit.
+                if (!strcmp(command -> argsComm[0], "pwd") || !strcmp(command -> argsComm[0], "?")
+                    || !strcmp(command -> argsComm[0], "kill") || !strcmp(command -> argsComm[0], "jobs")
+                    || !strcmp(command -> argsComm[0], "bg") || !strcmp(command -> argsComm[0], "fg")) {
+                    tmp = callRightCommand(command);
+                } else {
+                    tmp = execvp(command -> argsComm[0], command -> argsComm);
+                    fprintf(stderr,"%s\n", strerror(errno)); // Ne s'exécute qu'en cas d'erreur dans l'exécution de execvp.
+                }
+                exit(tmp);
+            }
+            else { // processus parent
+                // Mise du processus dans le groupe du job (l_jobs[nbJobs-1] est le dernier job créé).
+                if (l_jobs[nbJobs-1].pgid == 0) l_jobs[nbJobs-1].pgid = pid;
+                setpgid(pid, l_jobs[nbJobs-1].pgid);
+                returnValue = pid;
+            }
+        }
+    }
+    // Remise en état des canaux standards.
+    restore_standard_streams(standard_streams_copy);
     // Libération de la mémoire allouée pour le tube stockant l'entrée.
     if (pipe_in != NULL) free(pipe_in);
     /* Fermeture de l'entrée en lecture et libération de la mémoire allouée pour
@@ -195,28 +200,28 @@ int execute_command(Command* command, int pipe_out[2]) {
     }
     // Libération de la mémoire allouée pour la commande.
     free_command(command);
-    
-    return tmp;
+    return returnValue;
 }
 
-int apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
-    int cpy_stdin, cpy_stdout, cpy_stderr;
-    int fd_in = -1, fd_out = -1, fd_err = -1;
+int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
+    int* standard_streams_copy = malloc(3*sizeof(int));
+    memset(standard_streams_copy, 0, sizeof(*standard_streams_copy));
 
     // Redirection entrée.
+    int fd_in = 0;
     if (pipe_in != NULL) { // Si l'entrée est sur un tube.
         if (command -> in_redir != NULL && strcmp(command -> in_redir[1], "fifo")) {
             fprintf(stderr, "command %s: redirection entrée impossible", command -> argsComm[0]);
-            return 1;
+            return NULL;
         } else {
-            cpy_stdin = dup(0);
+            standard_streams_copy[0] = dup(0);
             close(pipe_in[1]); // On va lire sur le tube, pas besoin de l'entrée en écriture.
             fd_in = pipe_in[0];
             dup2(fd_in, 0);
             close(fd_in);
         }
     } else if (command -> in_redir != NULL) { // Si l'entrée est sur un fichier.
-        cpy_stdin = dup(0);
+        standard_streams_copy[0] = dup(0);
         if (!strcmp(command -> in_redir[0], "<")) {
             fd_in = open(command -> in_redir[1], O_RDONLY, 0666);
         }
@@ -225,19 +230,22 @@ int apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
     }
 
     // Redirection sortie.
+    int fd_out = 0;
     if (pipe_out != NULL) { // Si la sortie est un tube.
         if (command -> out_redir != NULL) {
             fprintf(stderr, "command %s: redirection sortie impossible", command -> argsComm[0]);
-            return 1;
+            restore_standard_streams(standard_streams_copy);
+            return NULL;
         } 
-        // La redirection est faite dans external_command().
+        // La redirection est faite dans le processus fils.
     } else if (command -> out_redir != NULL) { // Si la sortie est un fichier.
-        cpy_stdout = dup(1);
+        standard_streams_copy[1] = dup(1);
         if (!strcmp(command -> out_redir[0], ">")) {
             fd_out = open(command -> out_redir[1], O_WRONLY|O_APPEND|O_CREAT|O_EXCL, 0666);
             if (fd_out == -1) {
                 fprintf(stderr,"bash : %s: file already exist.\n", command -> argsComm[0]);
-                return 1;
+                restore_standard_streams(standard_streams_copy);
+                return NULL;
             }
         } else if (!strcmp(command -> out_redir[0], ">|")) {
             fd_out = open(command -> out_redir[1], O_WRONLY|O_CREAT|O_TRUNC, 0666);
@@ -249,13 +257,15 @@ int apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
     }
 
     // Redirection sortie erreur.
+    int fd_err = 0;
     if (command -> err_redir != NULL) { // Si la sortie erreur est un fichier.
-        cpy_stderr = dup(2);
+        standard_streams_copy[2] = dup(2);
         if (!strcmp(command -> err_redir[0], "2>")) {
             fd_err = open(command -> err_redir[1], O_WRONLY|O_APPEND|O_CREAT|O_EXCL, 0666);
             if (fd_err == -1) {
                 fprintf(stderr,"bash : %s: file already exists.\n", command -> argsComm[0]);
-                return 1;
+                restore_standard_streams(standard_streams_copy);
+                return NULL;
             }
         } else if (!strcmp(command -> err_redir[0], "2>|")) {
             fd_err = open(command -> err_redir[1], O_WRONLY|O_CREAT|O_TRUNC, 0666);
@@ -265,53 +275,14 @@ int apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
         dup2(fd_err, 2);
         close(fd_err);
     }
-
-    // Appel à l'exécution de la commande.
-    int tmp;
-    if (!strcmp(command -> argsComm[0],"cd") || !strcmp(command -> argsComm[0],"exit")) {
-        tmp = callRightCommand(command); // cd et exit doivent être exécutées sur le processus jsh.
-    } else tmp = external_command(command, pipe_out);
-
-    // Remise en état.
-    if (fd_in != -1) dup2(cpy_stdin, 0);
-    if (fd_out != -1) dup2(cpy_stdout, 1);
-    if (fd_err != -1) dup2(cpy_stderr, 2);
-
-    return tmp;
+    return standard_streams_copy;
 }
 
-
-/*
-This function returns the error of execvp and is exuting the command "command_name" with the arguments "arguments".
-*/
-int external_command(Command* command, int pipe_out[2]) {
-    pid_t pid = fork();
-
-    if (pid == 0) { // processus enfant
-        pthread_sigmask(SIG_UNBLOCK,&sa.sa_mask,NULL); // On retire le masquage des signaux.
-        int tmp = 0;
-        if (nbJobs < 40) {
-            if (pipe_out != NULL) { // Redirection de la sortie de la commande exécutée si c'est attendu.
-                close(pipe_out[0]);
-                int fd_out = pipe_out[1];
-                dup2(fd_out, 1);
-                close(fd_out);
-            }
-            // On exécute aussi ici les commandes internes qui affichent quelque chose.
-            if (!strcmp(command -> argsComm[0], "pwd") || !strcmp(command -> argsComm[0], "?")
-                || !strcmp(command -> argsComm[0], "kill") || !strcmp(command -> argsComm[0], "jobs")
-                || !strcmp(command -> argsComm[0], "bg") || !strcmp(command -> argsComm[0], "fg")) {
-                tmp = callRightCommand(command);
-            } else {
-                tmp = execvp(command -> argsComm[0], command -> argsComm);
-                fprintf(stderr,"%s\n", strerror(errno)); // Ne s'exécute qu'en cas d'erreur dans l'exécution de execvp.
-            }
-        }
-        exit(tmp);
+void restore_standard_streams(int standard_streams_copy[3]) {
+    for (unsigned i = 0; i < 3; ++i) {
+        if (standard_streams_copy + i != NULL) dup2(standard_streams_copy[i], i);
     }
-    else { // processus parent
-        return pid;
-    }
+    free(standard_streams_copy);
 }
 
 /* Prend en argument une structure Command correspondant à une commande interne, vérifie que le
@@ -348,59 +319,59 @@ int callRightCommand(Command* command) {
         } else return 1;
     }
     // Commande jobs
-    else if (strcmp(command -> argsComm[0],"jobs") == 0) {
-        if (correct_nbArgs(command -> argsComm, 1, 3)) {
-            if (command->argsComm[2] != NULL) {
-                if (command->argsComm[2][0] != '%') return 1;
-                if (command->argsComm[1][0] != '-') return 1;
-                pid_t pidToFind = convert_str_to_int(command->argsComm[1]);
-                print_jobs(-pidToFind,true,true);
-            }
-            else if (command->argsComm[1] != NULL) {
-                if (command->argsComm[1][0] != '%' && command->argsComm[1][0] != '-') return 1;
-                else if (command->argsComm[1][0] == '%') {
-                    pid_t pidToFind = convert_str_to_int(command->argsComm[1]);
-                    print_jobs(-pidToFind,true,false);
-                }
-                else {
-                    print_jobs(0,false,true);
-                }
-            }
-            else print_jobs(0,false,false);
-            return 0;
-        } else return 1;
-    }
+    // else if (strcmp(command -> argsComm[0],"jobs") == 0) {
+    //     if (correct_nbArgs(command -> argsComm, 1, 3)) {
+    //         if (command->argsComm[2] != NULL) {
+    //             if (command->argsComm[2][0] != '%') return 1;
+    //             if (command->argsComm[1][0] != '-') return 1;
+    //             pid_t pidToFind = convert_str_to_int(command->argsComm[1]);
+    //             print_jobs(-pidToFind,true,true);
+    //         }
+    //         else if (command->argsComm[1] != NULL) {
+    //             if (command->argsComm[1][0] != '%' && command->argsComm[1][0] != '-') return 1;
+    //             else if (command->argsComm[1][0] == '%') {
+    //                 pid_t pidToFind = convert_str_to_int(command->argsComm[1]);
+    //                 print_jobs(-pidToFind,true,false);
+    //             }
+    //             else {
+    //                 print_jobs(0,false,true);
+    //             }
+    //         }
+    //         else print_jobs(0,false,false);
+    //         return 0;
+    //     } else return 1;
+    // }
     // Commande kill
-    else if (strcmp(command -> argsComm[0],"kill") == 0) {
-        if (correct_nbArgs(command -> argsComm, 2, 3)) {
-            int tmp = killJob(command -> argsComm[1],command -> argsComm[2]);
-            if (tmp == -1) {
-                perror(NULL);
-            }
-            return tmp;
-        } else return 1;
-    }
+    // else if (strcmp(command -> argsComm[0],"kill") == 0) {
+    //     if (correct_nbArgs(command -> argsComm, 2, 3)) {
+    //         int tmp = killJob(command -> argsComm[1],command -> argsComm[2]);
+    //         if (tmp == -1) {
+    //             perror(NULL);
+    //         }
+    //         return tmp;
+    //     } else return 1;
+    // }
     // Commandes bg et fg
-    else if (strcmp(command -> argsComm[0],"bg") == 0 || strcmp(command -> argsComm[0],"fg") == 0 ) {
-        if (correct_nbArgs(command -> argsComm, 2, 3)) {
-            char * s = command -> argsComm[1];
-            char * secondlast = &s[strlen(s)-2];
-            char * last = &s[strlen(s)-1];
-            char * final = malloc(sizeof(char)*2);
-            if (!strcmp(secondlast,"%")) {
-                strcpy(&final[0],secondlast);
-                strcpy(&final[1],last);
-            }
-            else strcpy(&final[0], last);
-            int result;
-            if(strcmp(command -> argsComm[0],"bg") == 0) result = bg(convert_str_to_int(final)-1);
-            else result = fg(convert_str_to_int(final)-1);
-            free(final);
-            return result;
+    // else if (strcmp(command -> argsComm[0],"bg") == 0 || strcmp(command -> argsComm[0],"fg") == 0 ) {
+    //     if (correct_nbArgs(command -> argsComm, 2, 3)) {
+    //         char * s = command -> argsComm[1];
+    //         char * secondlast = &s[strlen(s)-2];
+    //         char * last = &s[strlen(s)-1];
+    //         char * final = malloc(sizeof(char)*2);
+    //         if (!strcmp(secondlast,"%")) {
+    //             strcpy(&final[0],secondlast);
+    //             strcpy(&final[1],last);
+    //         }
+    //         else strcpy(&final[0], last);
+    //         int result;
+    //         if(strcmp(command -> argsComm[0],"bg") == 0) result = bg(convert_str_to_int(final)-1);
+    //         else result = fg(convert_str_to_int(final)-1);
+    //         free(final);
+    //         return result;
             
-        }
-        else return 1;
-    }
+    //     }
+    //     else return 1;
+    // }
     // Commande exit
     else if (strcmp(command -> argsComm[0], "exit") == 0) {
         if (correct_nbArgs(command -> argsComm, 1, 2)) {
@@ -512,8 +483,7 @@ void print_lastReturn() {
 int exit_jsh(int val) {
     int returnValue;
     if (nbJobs > 0) {
-        fprintf(stderr,"exit\n");
-        fprintf(stderr,"There are stopped jobs.\n");
+        fprintf(stderr,"Exit: There are stopped jobs.\n");
         returnValue = 1;
     }
     else {
@@ -523,61 +493,60 @@ int exit_jsh(int val) {
     return returnValue;
 }
 
-// Relance à l'arrière-plan le job dont le numéro est passé en argument.
-int bg(int job_num) {
-    if (job_num > nbJobs) {
-        fprintf(stderr, "Could not run bg, process not found.\n");
-        return 1;
-    }
-    Job *job = & l_jobs[job_num];
-    if(!strcmp(job->ground,"Background")){
-        fprintf(stderr, "Process already running in Background.\n");
-        return 1;
-    }
-    strcpy(job->ground,"Background");
-    strcat(job->command_name, " &");
-    inspectAllSons(job -> pid, SIGCONT, false, false);
-    kill(job -> pid, SIGCONT);
-    print_job(l_jobs[job_num]);
-    return 0;
-}
+// // Relance à l'arrière-plan le job dont le numéro est passé en argument.
+// int bg(int job_num) {
+//     if (job_num > nbJobs) {
+//         fprintf(stderr, "Could not run bg, process not found.\n");
+//         return 1;
+//     }
+//     Job *job = & l_jobs[job_num];
+//     if(!strcmp(job->ground,"Background")){
+//         fprintf(stderr, "Process already running in Background.\n");
+//         return 1;
+//     }
+//     strcpy(job->ground,"Background");
+//     strcat(job->command_name, " &");
+//     inspectAllSons(job -> pid, SIGCONT, false, false);
+//     kill(job -> pid, SIGCONT);
+//     print_job(l_jobs[job_num]);
+//     return 0;
+// }
 
-// Relance à l'avant-plan le job dont le numéro est passé en argument.
-int fg(int job_num) {
-    if (job_num > nbJobs) {
-        fprintf(stderr, "Could not run bg, process not found.\n");
-        return 1;
-    }
-    Job *job = & l_jobs[job_num];
-    if(!strcmp(job->ground,"Foreground")) {
-        fprintf(stderr, "Process already running in Foreground.\n");
-        return 1;
-    }
-    strcpy(job->ground,"Foreground");
-    inspectAllSons(job -> pid, SIGCONT, false, false);
-    kill(job -> pid, SIGCONT);
-    waitForAllSons(job -> pid);
-    waitpid(job -> pid, NULL, 0);
-    print_job(l_jobs[job_num]);
-    return 0;
-}
+// // Relance à l'avant-plan le job dont le numéro est passé en argument.
+// int fg(int job_num) {
+//     if (job_num > nbJobs) {
+//         fprintf(stderr, "Could not run bg, process not found.\n");
+//         return 1;
+//     }
+//     Job *job = & l_jobs[job_num];
+//     if(!strcmp(job->ground,"Foreground")) {
+//         fprintf(stderr, "Process already running in Foreground.\n");
+//         return 1;
+//     }
+//     strcpy(job->ground,"Foreground");
+//     inspectAllSons(job -> pid, SIGCONT, false, false);
+//     kill(job -> pid, SIGCONT);
+//     waitForAllSons(job -> pid);
+//     waitpid(job -> pid, NULL, 0);
+//     print_job(l_jobs[job_num]);
+//     return 0;
+// }
 
 
 // Retourne le prompt à afficher.
-char* getPrompt() {
-    char* prompt = malloc(sizeof(char)* 50);
+char* getPrompt(char* prompt_buf) {
     int l_nbJobs = length_base10(nbJobs);
     if (strlen(current_folder) == 1) {
-        sprintf(prompt, BLEU"[%d]" NORMAL "c$ ", nbJobs);
+        sprintf(prompt_buf, BLEU"[%d]" NORMAL "c$ ", nbJobs);
     }
     else if (strlen(current_folder) <= (26-l_nbJobs)) {
-        sprintf(prompt, BLEU"[%d]" NORMAL "%s$ ", nbJobs, current_folder);
+        sprintf(prompt_buf, BLEU"[%d]" NORMAL "%s$ ", nbJobs, current_folder);
     }
     else{
         char* path = malloc(sizeof(char)*(27));
         strncpy(path, (current_folder + (strlen(current_folder) - (23 - l_nbJobs))), (25 - l_nbJobs));
-        sprintf(prompt, BLEU"[%d]" NORMAL "...%s$ ", nbJobs, path);
+        sprintf(prompt_buf, BLEU"[%d]" NORMAL "...%s$ ", nbJobs, path);
         free(path);
     }
-    return prompt;
+    return prompt_buf;
 }
