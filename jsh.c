@@ -83,38 +83,47 @@ void launch_job_execution(char* command_line) {
     strcpy(command_line_cpy, command_line);
     bool job_background = parse_ampersand(command_line);
     Command* command = getCommand(command_line);
+    if (command == NULL) {
+        lastReturn = 1;
+        return;
+    }
+    // Cas particulier pour les commandes simples: cd et exit doivent être exécutées sur le processus jsh.
+    if ((!strcmp(command -> argsComm[0],"cd") || !strcmp(command -> argsComm[0],"exit")) && command -> input == NULL) {
+        lastReturn = callRightCommand(command);
+        free(command_line_cpy);
+        return;
+    }
     // Création de la nouvelle structure Job.
-    if (nbJobs == 40) {
+    if (nbJobs == 32) {
         l_jobs = (Job*) realloc(l_jobs, sizeof(l_jobs)+sizeof(Job));
         checkAlloc(l_jobs);
     }
-    l_jobs[nbJobs] = create_job(command_line_cpy, nbJobs, job_background);
+    nbJobs++;
+    l_jobs[nbJobs-1] = create_job(command_line_cpy, nbJobs-1, job_background);
     // Appel à l'exécution de la commande associée au job.
     int execute_ret = execute_command(command, NULL);
-    switch (execute_ret) {
-        case 0: // La dernière commande du pipeline à exécuter était cd ou exit.
-        case 1: // Une erreur est survenue lors du processus d'exécution du pipeline.
-            lastReturn = execute_ret;
-            break;
-        default: { // L'exécution s'est passée correctement, et le pid du dernier fils a été renvoyé.
-            int status = 0;
-            if (job_background) waitpid(execute_ret,&status,WNOHANG);
-            else waitpid(execute_ret,&status,0);
-            lastReturn = status; // (WIFEXITED(status) ?
-            break;
-            // if (WIFEXITED(status)) {//si le fils s'est terminé normalement c'est qu'en parametre il y avait une fonction instantané
-            //     fprintf(stderr,"[%d] %d\n",nbJobs,pid);
-            //     returnValue = 1; // ?
-            // }
+    if (job_background) { // Job à l'arrière-plan.
+        lastReturn = 0;
+        print_job(l_jobs[nbJobs-1]);
+    }
+    else { // Job à l'avant-plan.
+        int job_pgid = l_jobs[nbJobs-1].pgid;
+        if (job_pgid) { /* Si le pgid du job associé à la ligne de commande a été set, i.e. si au moins un processus a été créé. */
+            // Mise du job à l'avant-plan.
+            int refering_tty_fd = open("/dev/tty", O_RDWR, 0);
+            // gestion erreur open
+            tcsetpgrp(refering_tty_fd, job_pgid);
+            if (execute_ret == 1) lastReturn = execute_ret; // Une erreur est survenue lors du processus de la dernière commande du pipeline.
+            else { // L'exécution s'est passée correctement, et le pid du dernier fils a été renvoyé.
+                int status = 0;
+                waitpid(execute_ret,&status,WUNTRACED);
+                lastReturn = status; // (WIFEXITED(status) ?
+            }
+            while(waitpid(-job_pgid, NULL, WUNTRACED) > 0); // Attente de la fin de tous les processus créés pour le job.
+            tcsetpgrp(refering_tty_fd, getpgid(0)); // Remise à l'avant-plan de jsh.
         }
-    }
-    if (job_background) {
-        print_job(l_jobs[nbJobs]);
-        nbJobs++; // Seul un job en background fait augmenter le compte de jobs en cours.
-    }
-    else {
-        while(waitpid(-(l_jobs[nbJobs-1].pgid), NULL, 0) > 0); // On attend la fin de tous les processus créés pour le job.
         removeJob(l_jobs, nbJobs, nbJobs-1);
+        nbJobs--;
     }
 }
 
@@ -153,43 +162,33 @@ int execute_command(Command* command, int pipe_out[2]) {
     // Appel à l'exécution de la commande.
     int returnValue = 0;
     int* standard_streams_copy = apply_redirections(command, pipe_in, pipe_out);
-    if (standard_streams_copy == NULL) { // Les redirections ont échoué.
-        returnValue = 1;
-    } else {
-        if (!strcmp(command -> argsComm[0],"cd") || !strcmp(command -> argsComm[0],"exit")) {
-            returnValue = callRightCommand(command); // cd et exit doivent être exécutées sur le processus jsh.
-        } else {
-            pid_t pid = fork();
-            if (pid == 0) { // processus enfant
-                pthread_sigmask(SIG_UNBLOCK,&sa.sa_mask,NULL); // Levée du masquage des signaux.
-                int tmp = 0;
-                if (pipe_out != NULL) { // Redirection de la sortie de la commande exécutée si c'est attendu.
-                    close(pipe_out[0]);
-                    int fd_out = pipe_out[1];
-                    dup2(fd_out, 1);
-                    close(fd_out);
-                }
-                // On exécute aussi ici les commandes internes autres que cd et exit.
-                if (!strcmp(command -> argsComm[0], "pwd") || !strcmp(command -> argsComm[0], "?")
-                    || !strcmp(command -> argsComm[0], "kill") || !strcmp(command -> argsComm[0], "jobs")
-                    || !strcmp(command -> argsComm[0], "bg") || !strcmp(command -> argsComm[0], "fg")) {
-                    tmp = callRightCommand(command);
-                } else {
-                    tmp = execvp(command -> argsComm[0], command -> argsComm);
-                    fprintf(stderr,"%s\n", strerror(errno)); // Ne s'exécute qu'en cas d'erreur dans l'exécution de execvp.
-                }
-                exit(tmp);
+    if (standard_streams_copy != NULL) { // Si les redirections ont été effectuées avec succès.
+        pid_t pid = fork();
+        if (pid == 0) { // processus enfant
+            pthread_sigmask(SIG_UNBLOCK,&sa.sa_mask,NULL); // Levée du masquage des signaux.
+            int tmp = 0;
+            if (pipe_out != NULL) { // Redirection de la sortie de la commande exécutée si c'est attendu.
+                close(pipe_out[0]);
+                int fd_out = pipe_out[1];
+                dup2(fd_out, 1);
+                close(fd_out);
             }
-            else { // processus parent
-                // Mise du processus dans le groupe du job (l_jobs[nbJobs-1] est le dernier job créé).
-                if (l_jobs[nbJobs-1].pgid == 0) l_jobs[nbJobs-1].pgid = pid;
-                setpgid(pid, l_jobs[nbJobs-1].pgid);
-                returnValue = pid;
+            if (is_internal_command(command -> argsComm[0])) tmp = callRightCommand(command);
+            else {
+                tmp = execvp(command -> argsComm[0], command -> argsComm);
+                fprintf(stderr,"%s\n", strerror(errno)); // Ne s'exécute qu'en cas d'erreur dans l'exécution de execvp.
             }
+            exit(tmp);
         }
-    }
-    // Remise en état des canaux standards.
-    restore_standard_streams(standard_streams_copy);
+        else { // processus parent
+            // Mise du processus dans le groupe du job.
+            if (l_jobs[nbJobs-1].pgid == 0) l_jobs[nbJobs-1].pgid = pid;
+            setpgid(pid, l_jobs[nbJobs-1].pgid);
+            returnValue = pid;
+            // Remise en état des canaux standards.
+            restore_standard_streams(standard_streams_copy);
+        }
+    } else returnValue = 1; // Si les redirections ont échoué.
     // Libération de la mémoire allouée pour le tube stockant l'entrée.
     if (pipe_in != NULL) free(pipe_in);
     /* Fermeture de l'entrée en lecture et libération de la mémoire allouée pour
@@ -203,10 +202,18 @@ int execute_command(Command* command, int pipe_out[2]) {
     return returnValue;
 }
 
+bool is_internal_command(char* command_name) {
+    if (!strcmp(command_name, "cd") || !strcmp(command_name, "exit")
+    ||  !strcmp(command_name, "pwd") || !strcmp(command_name, "?")
+    || !strcmp(command_name, "kill") || !strcmp(command_name, "jobs")
+    || !strcmp(command_name, "bg") || !strcmp(command_name, "fg")) {
+        return true;
+    } else return false;
+}
+
 int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
     int* standard_streams_copy = malloc(3*sizeof(int));
     memset(standard_streams_copy, 0, sizeof(*standard_streams_copy));
-
     // Redirection entrée.
     int fd_in = 0;
     if (pipe_in != NULL) { // Si l'entrée est sur un tube.
@@ -228,7 +235,6 @@ int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
         dup2(fd_in, 0);
         close(fd_in);
     }
-
     // Redirection sortie.
     int fd_out = 0;
     if (pipe_out != NULL) { // Si la sortie est un tube.
@@ -237,7 +243,7 @@ int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
             restore_standard_streams(standard_streams_copy);
             return NULL;
         } 
-        // La redirection est faite dans le processus fils.
+        // La redirection est faite dans le processus fils propre à la commande.
     } else if (command -> out_redir != NULL) { // Si la sortie est un fichier.
         standard_streams_copy[1] = dup(1);
         if (!strcmp(command -> out_redir[0], ">")) {
@@ -255,7 +261,6 @@ int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
         dup2(fd_out, 1);
         close(fd_out);
     }
-
     // Redirection sortie erreur.
     int fd_err = 0;
     if (command -> err_redir != NULL) { // Si la sortie erreur est un fichier.

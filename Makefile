@@ -6,7 +6,7 @@ build:
 	$(CC) -g $(CFLAGS) -c *.c
 	$(CC) -g $(CFLAGS) -o $(EXEC) *.o -lreadline
 
-test: build
+test:
 	TEST_FOLDER_FILTER=jalon-1 ./test.sh
 	# TEST_FOLDER_FILTER=jalon-2 ./test.sh
 	# TEST_FOLDER_FILTER=jalon-2-A ./test.sh
