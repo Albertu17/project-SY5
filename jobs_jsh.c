@@ -14,26 +14,32 @@
 #include "jobs_jsh.h"
 #include "toolbox_jsh.h"
 
-// int nTimesPrintStop = 0;
-
 void print_job(Job job) {
     fprintf(stderr,"[%d] %d %s %s\n",job.job_num, job.pgid, job.state, job.command_line);
 }
 
-// void print_jobs(pid_t job,bool isJob,bool tHyphen) {
-//     for (int i = 0; i < nbJobs; i++) {
-//         if (l_jobs[i].pid != 0) {
-//             if (tHyphen && job && l_jobs[i].pid == job) {
-//                 print_job(l_jobs[i]);
-//                 inspectAllSons(l_jobs[i].pid,0,true,false);
-//             }
-//             else if (tHyphen) {
-//                 print_job(l_jobs[i]);
-//                 inspectAllSons(l_jobs[i].pid,0,true,false);
-//             }
-//             else if (isJob && l_jobs[i].pid == job) print_job(l_jobs[i]);
-//             else print_job(l_jobs[i]);
+void print_jobs(Job* l_jobs, int nbJobs) {
+    for (unsigned i = 0; i < nbJobs; ++i) {
+        print_job(l_jobs[i]);
+    }
+}
+
+int jobs(char* job_num) {
+
+}
+
+// for (int i = 0; i < nbJobs; i++) {
+//     if (l_jobs[i].pid != 0) {
+//         if (tHyphen && job && l_jobs[i].pid == job) {
+//             print_job(l_jobs[i]);
+//             inspectAllSons(l_jobs[i].pid,0,true,false);
 //         }
+//         else if (tHyphen) {
+//             print_job(l_jobs[i]);
+//             inspectAllSons(l_jobs[i].pid,0,true,false);
+//         }
+//         else if (isJob && l_jobs[i].pid == job) print_job(l_jobs[i]);
+//         else print_job(l_jobs[i]);
 //     }
 // }
 
@@ -42,8 +48,20 @@ void removeJob(Job* l_jobs, int nbJobs, int job_num) {
     l_jobs[job_num].pgid = 0;
     free(l_jobs[job_num].state); 
     free(l_jobs[job_num].command_line);
-    for (int i = job_num; i < nbJobs; i++) {
-        l_jobs[i] = l_jobs[i+1];
+}
+
+void remove_gaps(Job* l_jobs, int nbJobs) {
+    for (unsigned i = 0; i < nbJobs; ++i) {
+        if (l_jobs[i].pgid == 0) { // Si on trouve un job libéré.
+            for (unsigned j = i; j < nbJobs; ++j) {
+                if (l_jobs[j].pgid != 0) { // Si on trouve un job rempli.
+                    // On les échange de place dans le tableau.
+                    Job cpy = l_jobs[i];
+                    l_jobs[i] = l_jobs[j];
+                    l_jobs[j] = cpy;
+                }
+            }
+        }
     }
 }
 
@@ -53,6 +71,82 @@ Job create_job(char* command_line, int job_num, bool background) {
     Job job = {job_num, 0, state, command_line, background};
     return job;
 }
+
+int check_jobs_state(Job* l_jobs, int nbJobs) {
+    int new_nbJobs = nbJobs, status;
+    for (unsigned i = 0; i < nbJobs; ++i) {
+        if (waitpid(-(l_jobs[i].pgid), &status, WNOHANG | WUNTRACED) != 0) {
+            if (WIFSTOPPED(status)) {
+                change_job_state(l_jobs[i], "Stopped");
+            } else if (WIFEXITED(status)) {
+                change_job_state(l_jobs[i], "Done");
+                removeJob(l_jobs, nbJobs, l_jobs[i].job_num);
+                new_nbJobs--;
+            } else if (WIFSIGNALED(status)) {
+                change_job_state(l_jobs[i], "Killed");
+                removeJob(l_jobs, nbJobs, l_jobs[i].job_num);
+                new_nbJobs--;
+            }
+        }
+    }
+    remove_gaps(l_jobs, nbJobs);
+    return new_nbJobs;
+}
+
+void change_job_state(Job job, char* state) {
+    memset(job.state, 0, strlen(job.state));
+    strcpy(job.state, state);
+    print_job(job);
+}
+
+//             else if (WIFCONTINUED(status)) {
+//                 nTimesPrintStop = 0;
+//                 free(l_jobs[i].state);
+//                 char* state = malloc(sizeof(char)*10);
+//                 strcpy(state,"Continued");
+//                 l_jobs[i].state = state;
+//                 print_job(l_jobs[i]);
+//                 i++;
+//             }
+
+// // Relance à l'arrière-plan le job dont le numéro est passé en argument.
+// int bg(int job_num) {
+//     if (job_num > nbJobs) {
+//         fprintf(stderr, "Could not run bg, process not found.\n");
+//         return 1;
+//     }
+//     Job *job = & l_jobs[job_num];
+//     if(!strcmp(job->ground,"Background")){
+//         fprintf(stderr, "Process already running in Background.\n");
+//         return 1;
+//     }
+//     strcpy(job->ground,"Background");
+//     strcat(job->command_name, " &");
+//     inspectAllSons(job -> pid, SIGCONT, false, false);
+//     kill(job -> pid, SIGCONT);
+//     print_job(l_jobs[job_num]);
+//     return 0;
+// }
+
+// // Relance à l'avant-plan le job dont le numéro est passé en argument.
+// int fg(int job_num) {
+//     if (job_num > nbJobs) {
+//         fprintf(stderr, "Could not run bg, process not found.\n");
+//         return 1;
+//     }
+//     Job *job = & l_jobs[job_num];
+//     if(!strcmp(job->ground,"Foreground")) {
+//         fprintf(stderr, "Process already running in Foreground.\n");
+//         return 1;
+//     }
+//     strcpy(job->ground,"Foreground");
+//     inspectAllSons(job -> pid, SIGCONT, false, false);
+//     kill(job -> pid, SIGCONT);
+//     waitForAllSons(job -> pid);
+//     waitpid(job -> pid, NULL, 0);
+//     print_job(l_jobs[job_num]);
+//     return 0;
+// }
 
 // bool inspectAllSons(pid_t pid3, int sig,bool print,bool hasStopped) {
 //     DIR* dir = opendir("/proc");
@@ -220,62 +314,4 @@ Job create_job(char* command_line, int job_num, bool background) {
 //     free(sig2);
 //     free(sig3);
 //     return returnValue;
-// }
-
-// void check_sons_state() {
-//     int status;
-//     int i = 0;
-//     while(i < nbJobs) {
-//         int tmp = inspectAllSons(l_jobs[i].pid,0,false,true);
-//         if (waitpid(l_jobs[i].pid,&status,WNOHANG) != 0 || (tmp && nTimesPrintStop == 0)) {
-//             if ((tmp && nTimesPrintStop == 0) || WIFSTOPPED(status)) {
-//                 if (tmp) nTimesPrintStop++;
-//                 free(l_jobs[i].state);
-//                 char* state = malloc(sizeof(char)*8);
-//                 strcpy(state,"Stopped");
-//                 l_jobs[i].state = state;
-//                 print_job(l_jobs[i]);
-//                 i++;
-//             }
-//             else if (WIFEXITED(status)) {
-//                 kill(l_jobs[i].pid,SIGKILL);
-//                 free(l_jobs[i].state);
-//                 char* state = malloc(sizeof(char)*5);
-//                 strcpy(state,"Done");
-//                 l_jobs[i].state = state;
-
-//                 print_job(l_jobs[i]);
-//                 removeJob(i);
-//                 nbJobs--;
-//             }
-//             else if (WIFCONTINUED(status)) {
-//                 nTimesPrintStop = 0;
-//                 free(l_jobs[i].state);
-//                 char* state = malloc(sizeof(char)*10);
-//                 strcpy(state,"Continued");
-//                 l_jobs[i].state = state;
-//                 print_job(l_jobs[i]);
-//                 i++;
-//             }
-//             else if (WIFSIGNALED(status)) {
-//                 free(l_jobs[i].state);
-//                 char* state = malloc(sizeof(char)*7);
-//                 strcpy(state,"Killed");
-//                 l_jobs[i].state = state;
-//                 print_job(l_jobs[i]);
-//                 removeJob(i);
-//                 nbJobs--;
-//             }
-//             else {
-//                 i++;
-//             }
-//         }
-//         else {
-//             i++;
-//         }
-//     }
-// }
-
-// void waitForAllSons(pid_t pid) {
-
 // }

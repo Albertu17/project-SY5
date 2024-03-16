@@ -37,6 +37,7 @@ int main(int argc, char** argv) {
     nbJobs = 0;
     lastReturn = 0;
     running = 1;
+    refering_tty_fd = open("/dev/tty", O_RDWR, 0); // Utile pour les passages du programme en avant-plan.
 
     main_loop(); // récupère et traite les commandes entrées.
 
@@ -44,6 +45,7 @@ int main(int argc, char** argv) {
     free(previous_folder);
     free(current_folder);
     free(l_jobs);
+    close(refering_tty_fd);
     return lastReturn;
 }
 
@@ -56,12 +58,15 @@ void main_loop() {
     using_history();
     // Boucle de récupération et de traitement des commandes.
     while (running) {
-        // On vérifie l'état des éventuels processus créés précedemment.
-        // check_sons_state();
+        // Vérification de l'état des jobs créés précedemment.
+        nbJobs = check_jobs_state(l_jobs, nbJobs);
         // Récupération de la commande entrée et affichage du prompt.
         command_line = readline(getPrompt(prompt_buf));
+        // Tests commande non vide.
+        if (command_line == NULL) break;
+        if (is_only_spaces(command_line)) continue;
         // Traitement de la ligne de commande entrée.
-        if (command_line != NULL && !is_only_spaces(command_line)) { // Tests commande non vide.
+        else {
             add_history(command_line); // Ajoute la ligne de commande entrée à l'historique.
             launch_job_execution(command_line);
         }
@@ -102,29 +107,39 @@ void launch_job_execution(char* command_line) {
     l_jobs[nbJobs-1] = create_job(command_line_cpy, nbJobs-1, job_background);
     // Appel à l'exécution de la commande associée au job.
     int execute_ret = execute_command(command, NULL);
-    if (job_background) { // Job à l'arrière-plan.
-        lastReturn = 0;
-        print_job(l_jobs[nbJobs-1]);
-    }
-    else { // Job à l'avant-plan.
-        int job_pgid = l_jobs[nbJobs-1].pgid;
-        if (job_pgid) { /* Si le pgid du job associé à la ligne de commande a été set, i.e. si au moins un processus a été créé. */
+    int job_pgid = l_jobs[nbJobs-1].pgid;
+    if (job_pgid) { /* Si le pgid du job associé à la ligne de commande a été set, i.e. si au moins un processus a été créé. */
+        if (job_background) { // Job à l'arrière-plan.
+            lastReturn = 0;
+            print_job(l_jobs[nbJobs-1]);
+            return;
+        } else { // Job à l'avant-plan.
             // Mise du job à l'avant-plan.
-            int refering_tty_fd = open("/dev/tty", O_RDWR, 0);
-            // gestion erreur open
             tcsetpgrp(refering_tty_fd, job_pgid);
-            if (execute_ret == 1) lastReturn = execute_ret; // Une erreur est survenue lors du processus de la dernière commande du pipeline.
-            else { // L'exécution s'est passée correctement, et le pid du dernier fils a été renvoyé.
-                int status = 0;
-                waitpid(execute_ret,&status,WUNTRACED);
-                lastReturn = status; // (WIFEXITED(status) ?
+            int status = 0;
+            if (execute_ret == 1) lastReturn = execute_ret; // Une erreur est survenue lors du processus d'exécution de la dernière commande du pipeline.
+            else { // L'exécution de la dernière commande s'est passée correctement, et le pid du processus créé a été renvoyé.
+                waitpid(execute_ret, &status, WUNTRACED);
+                lastReturn = status;
+                if (foreground_job_stopped(status)) return;
             }
-            while(waitpid(-job_pgid, NULL, WUNTRACED) > 0); // Attente de la fin de tous les processus créés pour le job.
+            // Attente de la fin de tous les processus créés pour le job.
+            while(waitpid(-job_pgid, &status, WUNTRACED) > 0) if (foreground_job_stopped(status)) return;
             tcsetpgrp(refering_tty_fd, getpgid(0)); // Remise à l'avant-plan de jsh.
         }
-        removeJob(l_jobs, nbJobs, nbJobs-1);
-        nbJobs--;
-    }
+    } else lastReturn = 1; // Aucun processus associé à une commande n'a pu être lancé.
+    removeJob(l_jobs, nbJobs, nbJobs-1);
+    nbJobs--;
+}
+
+/* Retourne true si le statut passé en argument est celui d'un process stoppé, false sinon.
+Si true, opère les changements en conséquence. */
+bool foreground_job_stopped(int status) {
+    if (WIFSTOPPED(status)) {
+        change_job_state(l_jobs[nbJobs-1], "Stopped");
+        tcsetpgrp(refering_tty_fd, getpgid(0)); // Remise à l'avant-plan de jsh.
+        return true;
+    } else return false;
 }
 
 /* Lance l'exécution de toutes les commandes situées à l'intérieur de la structure Command passée en
@@ -179,8 +194,7 @@ int execute_command(Command* command, int pipe_out[2]) {
                 fprintf(stderr,"%s\n", strerror(errno)); // Ne s'exécute qu'en cas d'erreur dans l'exécution de execvp.
             }
             exit(tmp);
-        }
-        else { // processus parent
+        } else { // processus parent
             // Mise du processus dans le groupe du job.
             if (l_jobs[nbJobs-1].pgid == 0) l_jobs[nbJobs-1].pgid = pid;
             setpgid(pid, l_jobs[nbJobs-1].pgid);
@@ -294,36 +308,33 @@ void restore_standard_streams(int standard_streams_copy[3]) {
 nombre d'arguments est correct, et appel la fonction qui correspond à l'exécution de cette commande. */
 int callRightCommand(Command* command) {
     // Commande cd
-    if (strcmp(command -> argsComm[0], "cd") == 0) {
-        if (correct_nbArgs(command -> argsComm, 1, 2)) {
-            if (command -> argsComm[1] == NULL || strcmp(command -> argsComm[1],"$HOME") == 0) {
-                char* home = getenv("HOME");
-                return cd(home);
-            }
-            else if (strcmp(command -> argsComm[1],"-") == 0) return cd(previous_folder);
-            else return cd(command -> argsComm[1]);
-        } else return 1;
+    if (!strcmp(command -> argsComm[0], "cd")) {
+        if (command -> argsComm[1] == NULL || !strcmp(command -> argsComm[1],"$HOME")) {
+            char* home = getenv("HOME");
+            return cd(home);
+        }
+        else if (!strcmp(command -> argsComm[1],"-")) return cd(previous_folder);
+        else return cd(command -> argsComm[1]);
     }
     // Commande pwd
-    else if (strcmp(command -> argsComm[0], "pwd") == 0) {
-        if (correct_nbArgs(command -> argsComm, 1, 1)) {
-            char* path = pwd();
-            if (path == NULL) return 1;
-            else {
-                printf("%s\n",path);
-                free(path);
-                return 0;
-            }
-        } else return 1;
+    else if (!strcmp(command -> argsComm[0], "pwd")) {
+        char* path = pwd();
+        if (path == NULL) return 1;
+        else {
+            printf("%s\n",path);
+            free(path);
+            return 0;
+        }
     }
     // Commande ?
-    else if (strcmp(command -> argsComm[0],"?") == 0) {
-        if (correct_nbArgs(command -> argsComm, 1, 1)) {
-            print_lastReturn();
-            return 0;
-        } else return 1;
+    else if (!strcmp(command -> argsComm[0],"?")) {
+        print_lastReturn();
+        return 0;
     }
     // Commande jobs
+    else if (!strcmp(command -> argsComm[0],"jobs")) {
+        return jobs(command -> argsComm[1]);
+    }
     // else if (strcmp(command -> argsComm[0],"jobs") == 0) {
     //     if (correct_nbArgs(command -> argsComm, 1, 3)) {
     //         if (command->argsComm[2] != NULL) {
@@ -378,22 +389,16 @@ int callRightCommand(Command* command) {
     //     else return 1;
     // }
     // Commande exit
-    else if (strcmp(command -> argsComm[0], "exit") == 0) {
-        if (correct_nbArgs(command -> argsComm, 1, 2)) {
-            if (command -> argsComm[1] == NULL) {
-                return exit_jsh(lastReturn);
+    else if (!strcmp(command -> argsComm[0], "exit")) {
+        if (command -> argsComm[1] == NULL) return exit_jsh(lastReturn);
+        else {
+            int int_args = convert_str_to_int(command -> argsComm[1]);
+            if (int_args == INT_MIN) {//we check the second argument doesn't contain some chars
+                fprintf(stderr,"Exit takes a normal integer as argument\n");
+                return 1;
             }
-            else {
-                int int_args = convert_str_to_int(command -> argsComm[1]);
-                if (int_args == INT_MIN) {//we check the second argument doesn't contain some chars
-                    fprintf(stderr,"Exit takes a normal integer as argument\n");
-                    return 1;
-                }
-                else {
-                    return exit_jsh(int_args);
-                }
-            }
-        } else return 1;
+            else return exit_jsh(int_args);
+        }
     }  
     else return 1;
 }
@@ -479,11 +484,9 @@ int cd (char* pathname) {
     return returnValue;
 }
 
-
 void print_lastReturn() {
     printf("%d\n", lastReturn);
 }
-
 
 int exit_jsh(int val) {
     int returnValue;
@@ -497,46 +500,6 @@ int exit_jsh(int val) {
     }
     return returnValue;
 }
-
-// // Relance à l'arrière-plan le job dont le numéro est passé en argument.
-// int bg(int job_num) {
-//     if (job_num > nbJobs) {
-//         fprintf(stderr, "Could not run bg, process not found.\n");
-//         return 1;
-//     }
-//     Job *job = & l_jobs[job_num];
-//     if(!strcmp(job->ground,"Background")){
-//         fprintf(stderr, "Process already running in Background.\n");
-//         return 1;
-//     }
-//     strcpy(job->ground,"Background");
-//     strcat(job->command_name, " &");
-//     inspectAllSons(job -> pid, SIGCONT, false, false);
-//     kill(job -> pid, SIGCONT);
-//     print_job(l_jobs[job_num]);
-//     return 0;
-// }
-
-// // Relance à l'avant-plan le job dont le numéro est passé en argument.
-// int fg(int job_num) {
-//     if (job_num > nbJobs) {
-//         fprintf(stderr, "Could not run bg, process not found.\n");
-//         return 1;
-//     }
-//     Job *job = & l_jobs[job_num];
-//     if(!strcmp(job->ground,"Foreground")) {
-//         fprintf(stderr, "Process already running in Foreground.\n");
-//         return 1;
-//     }
-//     strcpy(job->ground,"Foreground");
-//     inspectAllSons(job -> pid, SIGCONT, false, false);
-//     kill(job -> pid, SIGCONT);
-//     waitForAllSons(job -> pid);
-//     waitpid(job -> pid, NULL, 0);
-//     print_job(l_jobs[job_num]);
-//     return 0;
-// }
-
 
 // Retourne le prompt à afficher.
 char* getPrompt(char* prompt_buf) {
