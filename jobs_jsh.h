@@ -13,8 +13,9 @@ typedef struct Job Job;
 // Fonctions
 Job create_job(char* command_name, int job_num, bool background);
 void print_job(Job job);
-void print_jobs(pid_t job, bool isJob, bool tHyphen);
-void removeJob(Job* l_jobs, int nbJobs, int job_num);
+// void print_jobs(pid_t job, bool isJob, bool tHyphen);
+void print_jobs(Job* l_jobs, int nbJobs);
+void remove_job(Job* l_jobs, int job_num);
 int check_jobs_state(Job* l_jobs, int nbJobs);
 void change_job_state(Job job, char* state);
 bool inspectAllSons(pid_t pid, int sig,bool print,bool hasStopped);

@@ -2,13 +2,10 @@
 #include "jobs_jsh.h"
 
 // Fonctions de commande
-char* pwd();
+void update_paths();
 int cd(char* pathname);
-int exit_jsh(int val);
+int exit_jsh(char* val);
 void print_lastReturn();
-int external_command(Command* command, int pipe_out[2]);
-int bg(int job_num);
-int fg(int job_num);
 
 // Fonctions auxiliaires
 int main(int argc, char** argv);
@@ -25,9 +22,11 @@ char* getPrompt(char* prompt_buf);
 
 // Variables globales
 bool running;
+bool exit_tried;
 int lastReturn;
-char* current_folder;
-char* previous_folder;
+char* current_folder_path;
+char* previous_folder_path;
+int path_buffers_size;
 struct sigaction sa;
 int nbJobs;
 Job* l_jobs;

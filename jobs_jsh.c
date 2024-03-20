@@ -25,7 +25,7 @@ void print_jobs(Job* l_jobs, int nbJobs) {
 }
 
 int jobs(char* job_num) {
-
+    return 0;
 }
 
 // for (int i = 0; i < nbJobs; i++) {
@@ -43,7 +43,7 @@ int jobs(char* job_num) {
 //     }
 // }
 
-void removeJob(Job* l_jobs, int nbJobs, int job_num) {
+void remove_job(Job* l_jobs, int job_num) {
     l_jobs[job_num].job_num = 0;
     l_jobs[job_num].pgid = 0;
     free(l_jobs[job_num].state); 
@@ -80,11 +80,11 @@ int check_jobs_state(Job* l_jobs, int nbJobs) {
                 change_job_state(l_jobs[i], "Stopped");
             } else if (WIFEXITED(status)) {
                 change_job_state(l_jobs[i], "Done");
-                removeJob(l_jobs, nbJobs, l_jobs[i].job_num);
+                remove_job(l_jobs, l_jobs[i].job_num);
                 new_nbJobs--;
             } else if (WIFSIGNALED(status)) {
                 change_job_state(l_jobs[i], "Killed");
-                removeJob(l_jobs, nbJobs, l_jobs[i].job_num);
+                remove_job(l_jobs, l_jobs[i].job_num);
                 new_nbJobs--;
             }
         }
@@ -296,7 +296,7 @@ void change_job_state(Job job, char* state) {
 //         char* state = malloc(sizeof(char)*11);
 //         strcpy(state,"Killed");
 //         l_jobs[i].state = state;
-//         removeJob(i);
+//         remove_job(i);
 //         nbJobs--;
 //     }
 //     else if (returnValue == 0 && sig4 == 18 && tmp){

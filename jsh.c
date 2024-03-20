@@ -31,9 +31,12 @@ int main(int argc, char** argv) {
     pthread_sigmask(SIG_BLOCK,&sa.sa_mask,NULL);
 
     // Initialisation variables globales.
-    previous_folder = pwd();
-    current_folder = pwd();
+    path_buffers_size = PATH_MAX;
+    previous_folder_path = malloc(path_buffers_size);
+    current_folder_path = malloc(path_buffers_size);
+    update_paths();
     l_jobs = malloc(sizeof(Job)*32); // réalloué si nécessaire.
+    exit_tried = 0;
     nbJobs = 0;
     lastReturn = 0;
     running = 1;
@@ -42,8 +45,8 @@ int main(int argc, char** argv) {
     main_loop(); // récupère et traite les commandes entrées.
 
     // Libération des variables globales.
-    free(previous_folder);
-    free(current_folder);
+    free(previous_folder_path);
+    free(current_folder_path);
     free(l_jobs);
     close(refering_tty_fd);
     return lastReturn;
@@ -68,7 +71,9 @@ void main_loop() {
         // Traitement de la ligne de commande entrée.
         else {
             add_history(command_line); // Ajoute la ligne de commande entrée à l'historique.
+            bool exit_tried_record = exit_tried;
             launch_job_execution(command_line);
+            if (exit_tried_record) {exit_tried = false; exit_tried_record = false;}
         }
         // Libération de la mémoire allouée par readline.
         free(command_line);
@@ -77,7 +82,7 @@ void main_loop() {
     free(prompt_buf);
     for (unsigned i = 0; i < nbJobs; ++i){
         // kill(l_jobs[i].pgid,SIGKILL); // À MODIFIER: arrêter les job via leur pgid
-        free(l_jobs + i);
+        remove_job(l_jobs, i);
     }
 }
 
@@ -128,7 +133,7 @@ void launch_job_execution(char* command_line) {
             tcsetpgrp(refering_tty_fd, getpgid(0)); // Remise à l'avant-plan de jsh.
         }
     } else lastReturn = 1; // Aucun processus associé à une commande n'a pu être lancé.
-    removeJob(l_jobs, nbJobs, nbJobs-1);
+    remove_job(l_jobs, nbJobs-1);
     nbJobs--;
 }
 
@@ -227,7 +232,7 @@ bool is_internal_command(char* command_name) {
 
 int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
     int* standard_streams_copy = malloc(3*sizeof(int));
-    memset(standard_streams_copy, 0, sizeof(*standard_streams_copy));
+    memset(standard_streams_copy, -1, sizeof(*standard_streams_copy));
     // Redirection entrée.
     int fd_in = 0;
     if (pipe_in != NULL) { // Si l'entrée est sur un tube.
@@ -299,7 +304,7 @@ int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
 
 void restore_standard_streams(int standard_streams_copy[3]) {
     for (unsigned i = 0; i < 3; ++i) {
-        if (standard_streams_copy + i != NULL) dup2(standard_streams_copy[i], i);
+        if (standard_streams_copy[i] != -1) dup2(standard_streams_copy[i], i);
     }
     free(standard_streams_copy);
 }
@@ -309,22 +314,12 @@ nombre d'arguments est correct, et appel la fonction qui correspond à l'exécut
 int callRightCommand(Command* command) {
     // Commande cd
     if (!strcmp(command -> argsComm[0], "cd")) {
-        if (command -> argsComm[1] == NULL || !strcmp(command -> argsComm[1],"$HOME")) {
-            char* home = getenv("HOME");
-            return cd(home);
-        }
-        else if (!strcmp(command -> argsComm[1],"-")) return cd(previous_folder);
-        else return cd(command -> argsComm[1]);
+        return cd(command -> argsComm[1]);
     }
     // Commande pwd
     else if (!strcmp(command -> argsComm[0], "pwd")) {
-        char* path = pwd();
-        if (path == NULL) return 1;
-        else {
-            printf("%s\n",path);
-            free(path);
-            return 0;
-        }
+        printf("%s\n", current_folder_path);
+        return 0;
     }
     // Commande ?
     else if (!strcmp(command -> argsComm[0],"?")) {
@@ -332,9 +327,10 @@ int callRightCommand(Command* command) {
         return 0;
     }
     // Commande jobs
-    else if (!strcmp(command -> argsComm[0],"jobs")) {
-        return jobs(command -> argsComm[1]);
-    }
+    // else if (!strcmp(command -> argsComm[0],"jobs")) {
+    //     return jobs(command -> argsComm[1]);
+    // }
+
     // else if (strcmp(command -> argsComm[0],"jobs") == 0) {
     //     if (correct_nbArgs(command -> argsComm, 1, 3)) {
     //         if (command->argsComm[2] != NULL) {
@@ -390,15 +386,7 @@ int callRightCommand(Command* command) {
     // }
     // Commande exit
     else if (!strcmp(command -> argsComm[0], "exit")) {
-        if (command -> argsComm[1] == NULL) return exit_jsh(lastReturn);
-        else {
-            int int_args = convert_str_to_int(command -> argsComm[1]);
-            if (int_args == INT_MIN) {//we check the second argument doesn't contain some chars
-                fprintf(stderr,"Exit takes a normal integer as argument\n");
-                return 1;
-            }
-            else return exit_jsh(int_args);
-        }
+        return exit_jsh(command -> argsComm[1]);
     }  
     else return 1;
 }
@@ -418,69 +406,32 @@ bool correct_nbArgs(char** argsComm, unsigned min_nbArgs, unsigned max_nbArgs) {
     return correct_nb;
 }
 
-char* pwd() {
-    unsigned size = 30;
-    char* buf = malloc(size * sizeof(char));
-    checkAlloc(buf);
-    while (getcwd(buf,size) == NULL) { // Tant que getwd produit une erreur.
+void update_paths() {
+    strcpy(previous_folder_path, current_folder_path);
+    while (getcwd(current_folder_path, path_buffers_size) == NULL) { // Tant que getwd produit une erreur.
         if (errno == ERANGE) { /* Si la taille de la string représentant le chemin est plus grande que
         size, on augmente size et on réalloue. */
-            size *= 2;
-            buf = realloc(buf, size * sizeof(char));
-            checkAlloc(buf);
-        }
-        else { /* Si l'erreur dans getwd n'est pas dûe à la taille du buffer passé en argument, 
-        on affiche une erreur. */
-            fprintf(stderr,"ERROR IN pwd");
-            free(buf);
-            return NULL;
-        }
+            path_buffers_size *= 2;
+            current_folder_path = realloc(current_folder_path, path_buffers_size * sizeof(char));
+            checkAlloc(current_folder_path);
+        } else fprintf(stderr,"getcwd : error"); /* Si l'erreur dans getwd n'est pas dûe à la taille du
+        buffer passé en argument, on affiche une erreur. */
     }
-    return buf;
 }
 
 int cd (char* pathname) {
-    char* tmp = pwd();
-    int returnValue = chdir(pathname);
+    int returnValue;
+    if (pathname == NULL || !strcmp(pathname,"$HOME")) {
+        char* home = getenv("HOME");
+        returnValue = chdir(home);
+    } else if (!strcmp(pathname,"-")) {
+        returnValue = chdir(previous_folder_path);
+    } else returnValue = chdir(pathname);
     if (returnValue == -1) {
-        switch (errno) {
-            case (ENOENT) : {
-                char* home = getenv("HOME");
-                cd(home);
-                returnValue = chdir(pathname);//we returned to the root and try again
-                if (returnValue == -1) {
-                    if (errno == ENOENT) {
-                        cd(tmp);//if this doesn't work we return where we were
-                        fprintf(stderr,"cd : non-existent folder\n");break;
-                    }
-                    else {
-                        cd(tmp);//if this doesn't work we return where we were
-                    }
-                }
-                else {
-                    strcpy(previous_folder,tmp);
-                    char* tmp2 = pwd();
-                    strcpy(current_folder,tmp2);
-                    free(tmp2);
-                    break;
-                }
-            }
-            case (EACCES) : fprintf(stderr,"cd : Access restricted\n");break;
-            case (ENAMETOOLONG) : fprintf(stderr,"cd : Folder name too long\n");break;
-            case (ENOTDIR) : fprintf(stderr,"cd : An element is not a dir\n");break;
-            case (ENOMEM) : fprintf(stderr,"cd : Not enough memory for the core\n");break;
-            default : fprintf(stderr,"Unknown error !\n");break;
-        }
-        returnValue = 1;
-        free(tmp);
+        fprintf(stderr, "cd : %s\n", strerror(errno));
+        return 1;
     }
-    else {
-        strcpy(previous_folder,tmp);
-        free(tmp);
-        char* tmp2 = pwd();
-        strcpy(current_folder,tmp2);
-        free(tmp2);
-    }
+    update_paths();
     return returnValue;
 }
 
@@ -488,13 +439,21 @@ void print_lastReturn() {
     printf("%d\n", lastReturn);
 }
 
-int exit_jsh(int val) {
-    int returnValue;
-    if (nbJobs > 0) {
-        fprintf(stderr,"Exit: There are stopped jobs.\n");
-        returnValue = 1;
-    }
+int exit_jsh(char* string_val) {
+    int val, returnValue;
+    if (string_val == NULL) val = lastReturn;
     else {
+        val = convert_str_to_int(string_val);
+        if (val == INT_MIN) {//we check the second argument doesn't contain some chars
+            fprintf(stderr,"Exit takes an integer as argument.\n");
+            return 1;
+        }
+    }
+    if (!exit_tried && nbJobs > 0) {
+        fprintf(stderr,"Exit: There are stopped jobs.\n");
+        exit_tried = 1;
+        returnValue = 1;
+    } else {
         returnValue = val;
         running = 0;
     }
@@ -504,17 +463,15 @@ int exit_jsh(int val) {
 // Retourne le prompt à afficher.
 char* getPrompt(char* prompt_buf) {
     int l_nbJobs = length_base10(nbJobs);
-    if (strlen(current_folder) == 1) {
-        sprintf(prompt_buf, BLEU"[%d]" NORMAL "c$ ", nbJobs);
-    }
-    else if (strlen(current_folder) <= (26-l_nbJobs)) {
-        sprintf(prompt_buf, BLEU"[%d]" NORMAL "%s$ ", nbJobs, current_folder);
-    }
-    else{
-        char* path = malloc(sizeof(char)*(27));
-        strncpy(path, (current_folder + (strlen(current_folder) - (23 - l_nbJobs))), (25 - l_nbJobs));
+    if (strlen(current_folder_path) == 1) { // Si on se trouve à la racine.
+        sprintf(prompt_buf, BLEU"[%d]" NORMAL "/$ ", nbJobs);
+    } else if (strlen(current_folder_path) <= (26-l_nbJobs)) { /* Si l'écriture du chemin est suffisamment
+        courte pour être affichée en entier. */
+        sprintf(prompt_buf, BLEU"[%d]" NORMAL "%s$ ", nbJobs, current_folder_path);
+    } else { // Sinon, récupération des 23 derniers caractères du chemin, plus le 0 final.
+        char path[25];
+        memmove(path, (current_folder_path + (strlen(current_folder_path) - (23 - l_nbJobs + 1))), (23 - l_nbJobs + 1));
         sprintf(prompt_buf, BLEU"[%d]" NORMAL "...%s$ ", nbJobs, path);
-        free(path);
     }
     return prompt_buf;
 }
