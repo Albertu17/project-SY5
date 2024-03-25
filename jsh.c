@@ -268,7 +268,7 @@ int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
         if (!strcmp(command -> out_redir[0], ">")) {
             fd_out = open(command -> out_redir[1], O_WRONLY|O_APPEND|O_CREAT|O_EXCL, 0666);
             if (fd_out == -1) {
-                fprintf(stderr,"bash : %s: file already exist.\n", command -> argsComm[0]);
+                fprintf(stderr,"bash : %s: file already exists.\n", command -> argsComm[0]);
                 restore_standard_streams(standard_streams_copy);
                 return NULL;
             }
@@ -302,7 +302,7 @@ int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
     return standard_streams_copy;
 }
 
-void restore_standard_streams(int standard_streams_copy[3]) {
+void restore_standard_streams(int* standard_streams_copy) {
     for (unsigned i = 0; i < 3; ++i) {
         if (standard_streams_copy[i] != -1) dup2(standard_streams_copy[i], i);
     }
