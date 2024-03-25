@@ -72,7 +72,7 @@ void main_loop() {
         else {
             add_history(command_line); // Ajoute la ligne de commande entrée à l'historique.
             bool exit_tried_record = exit_tried;
-            launch_job_execution(command_line);
+            handle_job_execution(command_line);
             if (exit_tried_record) {exit_tried = false; exit_tried_record = false;}
         }
         // Libération de la mémoire allouée par readline.
@@ -87,7 +87,7 @@ void main_loop() {
 }
 
 // Supervise le traitement d'un job.
-void launch_job_execution(char* command_line) {
+void handle_job_execution(char* command_line) {
     // Appel à la création de la structure commande associée à la ligne de commande.
     char* command_line_cpy = malloc(sizeof(command_line));
     strcpy(command_line_cpy, command_line);
@@ -111,7 +111,7 @@ void launch_job_execution(char* command_line) {
     nbJobs++;
     l_jobs[nbJobs-1] = create_job(command_line_cpy, nbJobs-1, job_background);
     // Appel à l'exécution de la commande associée au job.
-    int execute_ret = execute_command(command, NULL);
+    int execute_ret = handle_command_execution(command, NULL);
     int job_pgid = l_jobs[nbJobs-1].pgid;
     if (job_pgid) { /* Si le pgid du job associé à la ligne de commande a été set, i.e. si au moins un processus a été créé. */
         if (job_background) { // Job à l'arrière-plan.
@@ -149,17 +149,17 @@ bool foreground_job_stopped(int status) {
 
 /* Lance l'exécution de toutes les commandes situées à l'intérieur de la structure Command passée en
 argument, gère le stockage de leur sortie, puis lance l'exécution de l'agument command. */
-int execute_command(Command* command, int pipe_out[2]) {
-    int* pipe_in = NULL;
+int handle_command_execution(Command* command, int pipe_out[2]) {
     // Stockage de l'input sur un tube.
-    if (command -> input != NULL) {
+    int* pipe_in = NULL;
+    Command* input_command = NULL;
+    if (command -> input != NULL) input_command = command -> input;
+    else if (command -> in_sub != NULL) input_command = command -> in_sub; // Si l'entrée est la sortie d'une substitution.
+    if (input_command != NULL) {
         pipe_in = malloc(2*sizeof(int));
         pipe(pipe_in);
-        execute_command(command -> input, pipe_in);
-    } else if (command -> in_sub != NULL) { // Si l'entrée est la sortie d'une substitution.
-        pipe_in = malloc(2*sizeof(int));
-        pipe(pipe_in);
-        execute_command(command -> in_sub, pipe_in);
+        handle_command_execution(input_command, pipe_in);
+        close(pipe_in[1]); // Fermeture de l'ouverture du tube en écriture.
     }
     // Stockage des substitutions sur des tubes anonymes.
     int* tubes[command -> nbSubstitutions];
@@ -172,7 +172,7 @@ int execute_command(Command* command, int pipe_out[2]) {
                 tubes[cpt] = pfd;
                 pipe(pfd);
                 // Stockage sur le tube.
-                execute_command(command -> substitutions[cpt], pfd);
+                handle_command_execution(command -> substitutions[cpt], pfd);
                 close(pfd[1]); // Fermeture de l'ouverture du tube en écriture.
                 sprintf(command -> argsComm[i], "/dev/fd/%i", pfd[0]);
                 cpt++;
@@ -183,30 +183,8 @@ int execute_command(Command* command, int pipe_out[2]) {
     int returnValue = 0;
     int* standard_streams_copy = apply_redirections(command, pipe_in, pipe_out);
     if (standard_streams_copy != NULL) { // Si les redirections ont été effectuées avec succès.
-        pid_t pid = fork();
-        if (pid == 0) { // processus enfant
-            pthread_sigmask(SIG_UNBLOCK,&sa.sa_mask,NULL); // Levée du masquage des signaux.
-            int tmp = 0;
-            if (pipe_out != NULL) { // Redirection de la sortie de la commande exécutée si c'est attendu.
-                close(pipe_out[0]);
-                int fd_out = pipe_out[1];
-                dup2(fd_out, 1);
-                close(fd_out);
-            }
-            if (is_internal_command(command -> argsComm[0])) tmp = callRightCommand(command);
-            else {
-                tmp = execvp(command -> argsComm[0], command -> argsComm);
-                fprintf(stderr,"%s\n", strerror(errno)); // Ne s'exécute qu'en cas d'erreur dans l'exécution de execvp.
-            }
-            exit(tmp);
-        } else { // processus parent
-            // Mise du processus dans le groupe du job.
-            if (l_jobs[nbJobs-1].pgid == 0) l_jobs[nbJobs-1].pgid = pid;
-            setpgid(pid, l_jobs[nbJobs-1].pgid);
-            returnValue = pid;
-            // Remise en état des canaux standards.
-            restore_standard_streams(standard_streams_copy);
-        }
+        returnValue = execute_command(command, pipe_out);
+        restore_standard_streams(standard_streams_copy); // Remise en état des canaux standards.
     } else returnValue = 1; // Si les redirections ont échoué.
     // Libération de la mémoire allouée pour le tube stockant l'entrée.
     if (pipe_in != NULL) free(pipe_in);
@@ -221,15 +199,6 @@ int execute_command(Command* command, int pipe_out[2]) {
     return returnValue;
 }
 
-bool is_internal_command(char* command_name) {
-    if (!strcmp(command_name, "cd") || !strcmp(command_name, "exit")
-    ||  !strcmp(command_name, "pwd") || !strcmp(command_name, "?")
-    || !strcmp(command_name, "kill") || !strcmp(command_name, "jobs")
-    || !strcmp(command_name, "bg") || !strcmp(command_name, "fg")) {
-        return true;
-    } else return false;
-}
-
 int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
     int* standard_streams_copy = malloc(3*sizeof(int));
     memset(standard_streams_copy, -1, sizeof(*standard_streams_copy));
@@ -241,7 +210,7 @@ int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
             return NULL;
         } else {
             standard_streams_copy[0] = dup(0);
-            close(pipe_in[1]); // On va lire sur le tube, pas besoin de l'entrée en écriture.
+            // close(pipe_in[1]); // On va lire sur le tube, pas besoin de l'entrée en écriture.
             fd_in = pipe_in[0];
             dup2(fd_in, 0);
             close(fd_in);
@@ -307,6 +276,42 @@ void restore_standard_streams(int* standard_streams_copy) {
         if (standard_streams_copy[i] != -1) dup2(standard_streams_copy[i], i);
     }
     free(standard_streams_copy);
+}
+
+pid_t execute_command(Command* command, int pipe_out[2]) {
+    pid_t pid = fork();
+    if (pid == 0) { // processus enfant
+        pthread_sigmask(SIG_UNBLOCK,&sa.sa_mask,NULL); // Levée du masquage des signaux.
+        if (l_jobs[nbJobs-1].pgid != 0) setpgid(0, l_jobs[nbJobs-1].pgid); // Inscription au groupe associé au job.
+        int tmp = 0;
+        if (pipe_out != NULL) { // Redirection de la sortie de la commande exécutée si c'est attendu.
+            close(pipe_out[0]);
+            int fd_out = pipe_out[1];
+            dup2(fd_out, 1);
+            close(fd_out);
+        }
+        if (is_internal_command(command -> argsComm[0])) tmp = callRightCommand(command);
+        else {
+            tmp = execvp(command -> argsComm[0], command -> argsComm);
+            fprintf(stderr,"%s\n", strerror(errno)); // Ne s'exécute qu'en cas d'erreur dans l'exécution de execvp.
+        }
+        exit(tmp);
+    } else { // processus parent
+        if (l_jobs[nbJobs-1].pgid == 0) { // Le premier processus donne son pid pour comme pgid.
+            l_jobs[nbJobs-1].pgid = pid;
+            setpgid(pid, l_jobs[nbJobs-1].pgid);
+        }
+        return pid;
+    }
+}
+
+bool is_internal_command(char* command_name) {
+    if (!strcmp(command_name, "cd") || !strcmp(command_name, "exit")
+    ||  !strcmp(command_name, "pwd") || !strcmp(command_name, "?")
+    || !strcmp(command_name, "kill") || !strcmp(command_name, "jobs")
+    || !strcmp(command_name, "bg") || !strcmp(command_name, "fg")) {
+        return true;
+    } else return false;
 }
 
 /* Prend en argument une structure Command correspondant à une commande interne, vérifie que le

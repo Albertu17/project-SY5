@@ -10,10 +10,11 @@ void print_lastReturn();
 // Fonctions auxiliaires
 int main(int argc, char** argv);
 void main_loop();
-void launch_job_execution(char* command_line);
+void handle_job_execution(char* command_line);
 bool foreground_job_stopped(int status);
-int execute_command(Command* command, int pipe_out[2]);
+int handle_command_execution(Command* command, int pipe_out[2]);
 int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]);
+pid_t execute_command(Command* command, int pipe_out[2]);
 void restore_standard_streams(int* standard_streams_copy);
 int callRightCommand(Command* command);
 bool is_internal_command(char* command_name);
