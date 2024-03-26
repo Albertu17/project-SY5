@@ -17,7 +17,6 @@ struct Command {
     struct Command** substitutions; // Les éventuelles substitutions (sans compter celle au fichier d'entrée).
     unsigned nbSubstitutions; // Le nombre de substitutions qu'utilise la commande (sans compter celle au fichier d'entrée).
     struct Command* input; // La commande précédente (dans le contexte d'une pipeline).
-    // bool background; // booléen indiquant si la commande doit être lancée en arrière-plan ou non.
 };
 typedef struct Command Command;
 

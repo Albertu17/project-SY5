@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
 void main_loop() {
     // Initialisation buffers.
     char* command_line = (char*) NULL; /* Stocke la ligne de commande entrée par l'utilisateur (allocation espace mémoire faite par readline). */
-    char* prompt_buf = malloc(sizeof(char) * 50); // Stocke le prompt à afficher à chaque tout de boucle.
+    char* prompt_buf = malloc(sizeof(char) * (MAX_PROMPT_SIZE +1)); // Stocke le prompt à afficher à chaque tout de boucle.
     // Paramétrage readline.
     rl_outstream = stderr;
     using_history();
@@ -161,7 +161,7 @@ int handle_command_execution(Command* command, int pipe_out[2]) {
         pipe_in = malloc(2*sizeof(int));
         pipe(pipe_in);
         handle_command_execution(input_command, pipe_in);
-        close(pipe_in[1]); // Fermeture de l'ouverture du tube en écriture.
+        //close(pipe_in[1]); // Fermeture de l'ouverture du tube en écriture.
     }
     // Stockage des substitutions sur des tubes anonymes.
     int* tubes[command -> nbSubstitutions];
@@ -182,12 +182,13 @@ int handle_command_execution(Command* command, int pipe_out[2]) {
         }
     }
     // Appel à l'exécution de la commande.
-    int returnValue = 0;
-    int* standard_streams_copy = apply_redirections(command, pipe_in, pipe_out);
-    if (standard_streams_copy != NULL) { // Si les redirections ont été effectuées avec succès.
-        returnValue = execute_command(command, pipe_out);
-        restore_standard_streams(standard_streams_copy); // Remise en état des canaux standards.
-    } else returnValue = 1; // Si les redirections ont échoué.
+    // int returnValue = 0;
+    // int* standard_streams_copy = apply_redirections(command, pipe_in, pipe_out);
+    int returnValue = apply_redirections(command, pipe_in, pipe_out);
+    // if (standard_streams_copy != NULL) { // Si les redirections ont été effectuées avec succès.
+    //     returnValue = execute_command(command, pipe_out);
+    //     restore_standard_streams(standard_streams_copy); // Remise en état des canaux standards.
+    // } else returnValue = 1; // Si les redirections ont échoué.
     // Libération de la mémoire allouée pour le tube stockant l'entrée.
     if (pipe_in != NULL) free(pipe_in);
     /* Fermeture de l'entrée en lecture et libération de la mémoire allouée pour
@@ -201,47 +202,45 @@ int handle_command_execution(Command* command, int pipe_out[2]) {
     return returnValue;
 }
 
-int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
-    int* standard_streams_copy = malloc(3*sizeof(int));
-    memset(standard_streams_copy, -1, sizeof(*standard_streams_copy));
+int apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
+    int cpy_stdin, cpy_stdout, cpy_stderr;
+    int fd_in = -1, fd_out = -1, fd_err = -1;
+
     // Redirection entrée.
-    int fd_in = 0;
     if (pipe_in != NULL) { // Si l'entrée est sur un tube.
         if (command -> in_redir != NULL && strcmp(command -> in_redir[1], "fifo")) {
             fprintf(stderr, "command %s: redirection entrée impossible", command -> argsComm[0]);
-            return NULL;
+            return 1;
         } else {
-            standard_streams_copy[0] = dup(0);
-            // close(pipe_in[1]); // On va lire sur le tube, pas besoin de l'entrée en écriture.
+            cpy_stdin = dup(0);
+            close(pipe_in[1]); // On va lire sur le tube, pas besoin de l'entrée en écriture.
             fd_in = pipe_in[0];
             dup2(fd_in, 0);
             close(fd_in);
         }
     } else if (command -> in_redir != NULL) { // Si l'entrée est sur un fichier.
-        standard_streams_copy[0] = dup(0);
+        cpy_stdin = dup(0);
         if (!strcmp(command -> in_redir[0], "<")) {
             fd_in = open(command -> in_redir[1], O_RDONLY, 0666);
         }
         dup2(fd_in, 0);
         close(fd_in);
     }
+
     // Redirection sortie.
-    int fd_out = 0;
     if (pipe_out != NULL) { // Si la sortie est un tube.
         if (command -> out_redir != NULL) {
             fprintf(stderr, "command %s: redirection sortie impossible", command -> argsComm[0]);
-            restore_standard_streams(standard_streams_copy);
-            return NULL;
+            return 1;
         } 
-        // La redirection est faite dans le processus fils propre à la commande.
+        // La redirection est faite dans external_command().
     } else if (command -> out_redir != NULL) { // Si la sortie est un fichier.
-        standard_streams_copy[1] = dup(1);
+        cpy_stdout = dup(1);
         if (!strcmp(command -> out_redir[0], ">")) {
             fd_out = open(command -> out_redir[1], O_WRONLY|O_APPEND|O_CREAT|O_EXCL, 0666);
             if (fd_out == -1) {
-                fprintf(stderr,"bash : %s: file already exists.\n", command -> argsComm[0]);
-                restore_standard_streams(standard_streams_copy);
-                return NULL;
+                fprintf(stderr,"bash : %s: file already exist.\n", command -> argsComm[0]);
+                return 1;
             }
         } else if (!strcmp(command -> out_redir[0], ">|")) {
             fd_out = open(command -> out_redir[1], O_WRONLY|O_CREAT|O_TRUNC, 0666);
@@ -251,16 +250,15 @@ int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
         dup2(fd_out, 1);
         close(fd_out);
     }
+
     // Redirection sortie erreur.
-    int fd_err = 0;
     if (command -> err_redir != NULL) { // Si la sortie erreur est un fichier.
-        standard_streams_copy[2] = dup(2);
+        cpy_stderr = dup(2);
         if (!strcmp(command -> err_redir[0], "2>")) {
             fd_err = open(command -> err_redir[1], O_WRONLY|O_APPEND|O_CREAT|O_EXCL, 0666);
             if (fd_err == -1) {
                 fprintf(stderr,"bash : %s: file already exists.\n", command -> argsComm[0]);
-                restore_standard_streams(standard_streams_copy);
-                return NULL;
+                return 1;
             }
         } else if (!strcmp(command -> err_redir[0], "2>|")) {
             fd_err = open(command -> err_redir[1], O_WRONLY|O_CREAT|O_TRUNC, 0666);
@@ -270,15 +268,97 @@ int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
         dup2(fd_err, 2);
         close(fd_err);
     }
-    return standard_streams_copy;
+
+    // Appel à l'exécution de la commande.
+    int tmp = execute_command(command, pipe_out);
+
+    // Remise en état.
+    if (fd_in != -1) dup2(cpy_stdin, 0);
+    if (fd_out != -1) dup2(cpy_stdout, 1);
+    if (fd_err != -1) dup2(cpy_stderr, 2);
+
+    return tmp;
 }
 
-void restore_standard_streams(int* standard_streams_copy) {
-    for (unsigned i = 0; i < 3; ++i) {
-        if (standard_streams_copy[i] != -1) dup2(standard_streams_copy[i], i);
-    }
-    free(standard_streams_copy);
-}
+
+// int* apply_redirections(Command* command, int pipe_in[2], int pipe_out[2]) {
+//     int* standard_streams_copy = malloc(3*sizeof(int));
+//     memset(standard_streams_copy, -1, sizeof(*standard_streams_copy));
+//     // Redirection entrée.
+//     int fd_in = 0;
+//     if (pipe_in != NULL) { // Si l'entrée est sur un tube.
+//         if (command -> in_redir != NULL && strcmp(command -> in_redir[1], "fifo")) {
+//             fprintf(stderr, "command %s: redirection entrée impossible", command -> argsComm[0]);
+//             return NULL;
+//         } else {
+//             standard_streams_copy[0] = dup(0);
+//             // close(pipe_in[1]); // On va lire sur le tube, pas besoin de l'entrée en écriture.
+//             fd_in = pipe_in[0];
+//             dup2(fd_in, 0);
+//             close(fd_in);
+//         }
+//     } else if (command -> in_redir != NULL) { // Si l'entrée est sur un fichier.
+//         standard_streams_copy[0] = dup(0);
+//         if (!strcmp(command -> in_redir[0], "<")) {
+//             fd_in = open(command -> in_redir[1], O_RDONLY, 0666);
+//         }
+//         dup2(fd_in, 0);
+//         close(fd_in);
+//     }
+//     // Redirection sortie.
+//     int fd_out = 0;
+//     if (pipe_out != NULL) { // Si la sortie est un tube.
+//         if (command -> out_redir != NULL) {
+//             fprintf(stderr, "command %s: redirection sortie impossible", command -> argsComm[0]);
+//             restore_standard_streams(standard_streams_copy);
+//             return NULL;
+//         } 
+//         // La redirection est faite dans le processus fils propre à la commande.
+//     } else if (command -> out_redir != NULL) { // Si la sortie est un fichier.
+//         standard_streams_copy[1] = dup(1);
+//         if (!strcmp(command -> out_redir[0], ">")) {
+//             fd_out = open(command -> out_redir[1], O_WRONLY|O_APPEND|O_CREAT|O_EXCL, 0666);
+//             if (fd_out == -1) {
+//                 fprintf(stderr,"bash : %s: file already exists.\n", command -> argsComm[0]);
+//                 restore_standard_streams(standard_streams_copy);
+//                 return NULL;
+//             }
+//         } else if (!strcmp(command -> out_redir[0], ">|")) {
+//             fd_out = open(command -> out_redir[1], O_WRONLY|O_CREAT|O_TRUNC, 0666);
+//         } else if (!strcmp(command -> out_redir[0], ">>")) {
+//             fd_out = open(command -> out_redir[1], O_WRONLY|O_APPEND|O_CREAT, 0666);
+//         }
+//         dup2(fd_out, 1);
+//         close(fd_out);
+//     }
+//     // Redirection sortie erreur.
+//     int fd_err = 0;
+//     if (command -> err_redir != NULL) { // Si la sortie erreur est un fichier.
+//         standard_streams_copy[2] = dup(2);
+//         if (!strcmp(command -> err_redir[0], "2>")) {
+//             fd_err = open(command -> err_redir[1], O_WRONLY|O_APPEND|O_CREAT|O_EXCL, 0666);
+//             if (fd_err == -1) {
+//                 fprintf(stderr,"bash : %s: file already exists.\n", command -> argsComm[0]);
+//                 restore_standard_streams(standard_streams_copy);
+//                 return NULL;
+//             }
+//         } else if (!strcmp(command -> err_redir[0], "2>|")) {
+//             fd_err = open(command -> err_redir[1], O_WRONLY|O_CREAT|O_TRUNC, 0666);
+//         } else if (!strcmp(command -> err_redir[0], "2>>")) {
+//             fd_err = open(command -> err_redir[1], O_WRONLY|O_APPEND|O_CREAT, 0666);
+//         }
+//         dup2(fd_err, 2);
+//         close(fd_err);
+//     }
+//     return standard_streams_copy;
+// }
+
+// void restore_standard_streams(int* standard_streams_copy) {
+//     for (unsigned i = 0; i < 3; ++i) {
+//         if (standard_streams_copy[i] != -1) dup2(standard_streams_copy[i], i);
+//     }
+//     free(standard_streams_copy);
+// }
 
 pid_t execute_command(Command* command, int pipe_out[2]) {
     pid_t pid = fork();
@@ -299,7 +379,7 @@ pid_t execute_command(Command* command, int pipe_out[2]) {
         }
         exit(tmp);
     } else { // processus parent
-        if (l_jobs[nbJobs-1].pgid == 0) { // Le premier processus donne son pid pour comme pgid.
+        if (l_jobs[nbJobs-1].pgid == 0) { // Le premier processus donne son pid pour pgid.
             l_jobs[nbJobs-1].pgid = pid;
             setpgid(pid, l_jobs[nbJobs-1].pgid);
         }
