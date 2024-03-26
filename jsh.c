@@ -57,8 +57,8 @@ int main(int argc, char** argv) {
 void main_loop() {
     // Initialisation buffers.
     char* command_line = (char*) NULL; /* Stocke la ligne de commande entrée par l'utilisateur (allocation espace mémoire faite par readline). */
-    char* prompt_buf = malloc(sizeof(char) * (MAX_PROMPT_SIZE +1)); // Stocke le prompt à afficher à chaque tout de boucle.
-    // Paramétrage readline.
+    char* prompt_buf = malloc(sizeof(char) * (MAX_PROMPT_SIZE + strlen(BLEU) + strlen(NORMAL) + 1)); // Stocke le prompt à afficher à chaque tout de boucle.
+    // Paramétrages readline.
     rl_outstream = stderr;
     using_history();
     // Boucle de récupération et de traitement des commandes.
@@ -91,7 +91,7 @@ void main_loop() {
 // Supervise le traitement d'un job.
 void handle_job_execution(char* command_line) {
     // Appel à la création de la structure commande associée à la ligne de commande.
-    char* command_line_cpy = malloc(sizeof(command_line));
+    char* command_line_cpy = malloc(strlen(command_line));
     strcpy(command_line_cpy, command_line);
     bool job_background = parse_ampersand(command_line);
     Command* command = getCommand(command_line);
