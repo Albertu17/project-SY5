@@ -17,8 +17,10 @@
 #include "parsing_jsh.h"
 #include "jsh.h"
 
+// Macros utilisées pour l'écriture du prompt.
 #define NORMAL "\033[00m"
 #define BLEU "\033[01;34m"
+#define MAX_PROMPT_SIZE 30
 
 int main(int argc, char** argv) {
     // Mise en place d'un masque.
@@ -328,7 +330,7 @@ int callRightCommand(Command* command) {
     }
     // Commande ?
     else if (!strcmp(command -> argsComm[0],"?")) {
-        print_lastReturn();
+        printf("%d\n", lastReturn);
         return 0;
     }
     // Commande jobs
@@ -440,10 +442,6 @@ int cd (char* pathname) {
     return returnValue;
 }
 
-void print_lastReturn() {
-    printf("%d\n", lastReturn);
-}
-
 int exit_jsh(char* string_val) {
     int val, returnValue;
     if (string_val == NULL) val = lastReturn;
@@ -467,15 +465,14 @@ int exit_jsh(char* string_val) {
 
 // Retourne le prompt à afficher.
 char* getPrompt(char* prompt_buf) {
-    int l_nbJobs = length_base10(nbJobs);
-    if (strlen(current_folder_path) == 1) { // Si on se trouve à la racine.
-        sprintf(prompt_buf, BLEU"[%d]" NORMAL "/$ ", nbJobs);
-    } else if (strlen(current_folder_path) <= (26-l_nbJobs)) { /* Si l'écriture du chemin est suffisamment
-        courte pour être affichée en entier. */
+    int max_path_size = MAX_PROMPT_SIZE - (4 + length_base10(nbJobs));
+    if (strlen(current_folder_path) <= max_path_size) { /* Si l'écriture du chemin
+        est suffisamment courte pour être affichée en entier. */
         sprintf(prompt_buf, BLEU"[%d]" NORMAL "%s$ ", nbJobs, current_folder_path);
-    } else { // Sinon, récupération des 23 derniers caractères du chemin, plus le 0 final.
-        char path[25];
-        memmove(path, (current_folder_path + (strlen(current_folder_path) - (23 - l_nbJobs + 1))), (23 - l_nbJobs + 1));
+    } else { // Sinon, récupération d'autant de caractères du chemin que possible, plus le 0 final.
+        max_path_size -= 3; // On rajoute 3 petits points avant l'affichage du chemin.
+        char path[max_path_size + 1];
+        memmove(path, current_folder_path + strlen(current_folder_path) - max_path_size, max_path_size + 1);
         sprintf(prompt_buf, BLEU"[%d]" NORMAL "...%s$ ", nbJobs, path);
     }
     return prompt_buf;
